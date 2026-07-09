@@ -1,6 +1,7 @@
 let latestBoard = null;
 let activeProjectFilter = null;
 let cardTruncationEnabled = localStorage.getItem('cardTruncationEnabled') !== 'false';
+let draggedCardId = null;
 async function fetchBoard() {
   const res = await fetch('/api/board');
   latestBoard = await res.json();
@@ -231,11 +232,14 @@ function createCardElement(card, projectMap) {
   }
 
   el.addEventListener('dragstart', (e) => {
+    draggedCardId = card.id;
     e.dataTransfer.setData('text/plain', card.id);
+    e.dataTransfer.setData('text', card.id);
     e.dataTransfer.effectAllowed = 'move';
     showDropZones();
   });
   el.addEventListener('dragend', () => {
+    draggedCardId = null;
     hideDropZones();
   });
 
@@ -398,12 +402,20 @@ async function render(options = {}){
     list.addEventListener('drop', async (e)=>{
       e.preventDefault();
       hideDropZones();
-      const id = e.dataTransfer.getData('text/plain');
-      await fetch('/api/card/' + id, {
+      const id = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text') || draggedCardId;
+      if(!id){
+        return;
+      }
+      const res = await fetch('/api/card/' + id, {
         method: 'PUT',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({column: col.id})
       });
+      if(!res.ok){
+        alert('Unable to move card. Please try again.');
+        return;
+      }
+      draggedCardId = null;
       render();
     });
 
@@ -1092,7 +1104,7 @@ cardEditModal.innerHTML = `
 document.body.appendChild(cardEditModal);
 registerProjectPicker('editCardProject');
 
-function createLinkRowElement(link){
+function createLinkRowElement(link, containerRef){
   const row = document.createElement('div');
   row.className = 'link-row';
   row.innerHTML = `
@@ -1120,9 +1132,9 @@ function createLinkRowElement(link){
   row.querySelector('.link-url').addEventListener('input', updateVisitState);
   row.querySelector('.link-remove').addEventListener('click', () => {
     row.remove();
-    const container = document.getElementById('linkRowsContainer');
+    const container = containerRef || document.getElementById('linkRowsContainer');
     if(container && !container.querySelector('.link-row')){
-      container.appendChild(createLinkRowElement({}));
+      container.appendChild(createLinkRowElement({}, container));
     }
   });
   return row;
@@ -1310,6 +1322,13 @@ splitTaskModal.innerHTML = `
           <input id="splitOriginalAssignee" class="modal-input" placeholder="Assignee (optional)" />
           <label>Description:</label>
           <textarea id="splitOriginalDesc" placeholder="Description (optional)"></textarea>
+          <div class="links-section">
+            <div class="links-header">
+              <span>Links</span>
+              <button type="button" id="splitOriginalAddLinkBtn">+ Link</button>
+            </div>
+            <div id="splitOriginalLinksContainer" class="link-rows"></div>
+          </div>
         </div>
       </div>
       <div class="split-pane split-right">
@@ -1327,6 +1346,13 @@ splitTaskModal.innerHTML = `
           <input id="splitNewAssignee" class="modal-input" placeholder="Assignee (optional)" />
           <label>Description:</label>
           <textarea id="splitNewDesc" placeholder="Description (optional)"></textarea>
+          <div class="links-section">
+            <div class="links-header">
+              <span>Links</span>
+              <button type="button" id="splitNewAddLinkBtn">+ Link</button>
+            </div>
+            <div id="splitNewLinksContainer" class="link-rows"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -1339,6 +1365,15 @@ splitTaskModal.innerHTML = `
 document.body.appendChild(splitTaskModal);
 registerProjectPicker('splitOriginalProject');
 registerProjectPicker('splitNewProject');
+
+document.getElementById('splitOriginalAddLinkBtn').addEventListener('click', () => {
+  const container = document.getElementById('splitOriginalLinksContainer');
+  if(container) container.appendChild(createLinkRowElement({}, container));
+});
+document.getElementById('splitNewAddLinkBtn').addEventListener('click', () => {
+  const container = document.getElementById('splitNewLinksContainer');
+  if(container) container.appendChild(createLinkRowElement({}, container));
+});
 
 function closeSplitTaskModal(){
   const modal = document.getElementById('splitTaskModal');
@@ -1371,7 +1406,20 @@ async function openSplitTaskModal(card){
   document.getElementById('splitNewAssignee').value = card.assignee || '';
   const newProjectInput = document.getElementById('splitNewProject');
   populateProjectInput(newProjectInput, card.project || '');
-  
+
+  // Populate link rows — both panes start with the same links so user can prune per side
+  const cardLinks = Array.isArray(card.links) && card.links.length ? card.links : [{}];
+  const origLinksContainer = document.getElementById('splitOriginalLinksContainer');
+  if(origLinksContainer){
+    origLinksContainer.innerHTML = '';
+    cardLinks.forEach(link => origLinksContainer.appendChild(createLinkRowElement(link, origLinksContainer)));
+  }
+  const newLinksContainer = document.getElementById('splitNewLinksContainer');
+  if(newLinksContainer){
+    newLinksContainer.innerHTML = '';
+    cardLinks.forEach(link => newLinksContainer.appendChild(createLinkRowElement(link, newLinksContainer)));
+  }
+
   // Apply purple styling to modal
   const modalContent = modal.querySelector('.split-modal-content');
   const modalPurple = '#b78ef5';
@@ -1431,6 +1479,39 @@ document.getElementById('splitTaskSaveBtn').addEventListener('click', async ()=>
   if(!newTitle) return alert('New task title required');
   
   try {
+    // Collect links independently from each pane's UI
+    const origLinksContainer = document.getElementById('splitOriginalLinksContainer');
+    const origLinks = [];
+    if(origLinksContainer){
+      origLinksContainer.querySelectorAll('.link-row').forEach(row => {
+        const text = row.querySelector('.link-text').value.trim();
+        const url = row.querySelector('.link-url').value.trim();
+        if(!url) return;
+        origLinks.push({text: text || url, url});
+      });
+    }
+    const newLinksContainer = document.getElementById('splitNewLinksContainer');
+    const newLinks = [];
+    if(newLinksContainer){
+      newLinksContainer.querySelectorAll('.link-row').forEach(row => {
+        const text = row.querySelector('.link-text').value.trim();
+        const url = row.querySelector('.link-url').value.trim();
+        if(!url) return;
+        newLinks.push({text: text || url, url});
+      });
+    }
+
+    // Find the column of the original card
+    const boardBeforeSplit = await fetchBoard();
+    let columnId = null;
+    for(const col of boardBeforeSplit.columns){
+      for(const card of col.cards){
+        if(card.id === cardId){ columnId = col.id; break; }
+      }
+      if(columnId) break;
+    }
+    if(!columnId) throw new Error('Could not find column for new card');
+
     // Update the original card
     const updateRes = await fetch('/api/card/' + cardId, {
       method:'PUT',
@@ -1440,26 +1521,11 @@ document.getElementById('splitTaskSaveBtn').addEventListener('click', async ()=>
         description: origDesc,
         assignee: origAssignee,
         project: origProject,
-        links: []
+        links: origLinks
       })
     });
     if(!updateRes.ok) throw new Error('Failed to update original card');
-    
-    // Find the column of the original card to place the new card in the same column
-    const board = await fetchBoard();
-    let columnId = null;
-    for(const col of board.columns){
-      for(const card of col.cards){
-        if(card.id === cardId){
-          columnId = col.id;
-          break;
-        }
-      }
-      if(columnId) break;
-    }
-    
-    if(!columnId) throw new Error('Could not find column for new card');
-    
+
     // Create the new card
     const createRes = await fetch('/api/card', {
       method:'POST',
@@ -1469,6 +1535,7 @@ document.getElementById('splitTaskSaveBtn').addEventListener('click', async ()=>
         description: newDesc,
         assignee: newAssignee,
         project: newProject,
+        links: newLinks,
         column: columnId
       })
     });

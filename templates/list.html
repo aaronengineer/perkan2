@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Task List - Personal Kanban</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/list.css">
+    <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
+  </head>
+  <body class="list-view-page">
+    <header>
+      <div class="header-top">
+        <div class="view-switcher">
+          <a href="/" class="view-link">🎯 Board</a>
+          <span class="view-link active">📋 List</span>
+        </div>
+        <div id="projectFilters" class="project-filters" aria-live="polite"></div>
+        <button id="settingsBtn" title="Board settings">⚙️ Settings</button>
+      </div>
+    </header>
+    <main id="listView" class="list-view">
+      <!-- Table renders here -->
+    </main>
+
+    <script src="/static/app.js"></script>
+    <script src="/static/list.js"></script>
+  </body>
+</html>

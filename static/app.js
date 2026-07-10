@@ -1116,54 +1116,78 @@ document.querySelectorAll('.settings-tab-btn').forEach(btn => {
   });
 });
 
-document.getElementById('truncateBtn').addEventListener('click', ()=>{
-  cardTruncationEnabled = !cardTruncationEnabled;
-  localStorage.setItem('cardTruncationEnabled', cardTruncationEnabled);
-  const btn = document.getElementById('truncateBtn');
-  btn.setAttribute('aria-pressed', cardTruncationEnabled ? 'true' : 'false');
-  btn.classList.toggle('active', cardTruncationEnabled);
-  render({useLatest: true});
-});
+const truncateBtn = document.getElementById('truncateBtn');
+if(truncateBtn){
+  truncateBtn.addEventListener('click', ()=>{
+    cardTruncationEnabled = !cardTruncationEnabled;
+    localStorage.setItem('cardTruncationEnabled', cardTruncationEnabled);
+    const btn = document.getElementById('truncateBtn');
+    btn.setAttribute('aria-pressed', cardTruncationEnabled ? 'true' : 'false');
+    btn.classList.toggle('active', cardTruncationEnabled);
+    render({useLatest: true});
+  });
+}
 
-document.getElementById('settingsBtn').addEventListener('click', ()=>{
-  const modal = document.getElementById('settingsModal');
-  if(modal.classList.contains('hidden')){
-    openSettingsModal('statuses');
-  } else {
+const settingsBtn = document.getElementById('settingsBtn');
+if(settingsBtn){
+  settingsBtn.addEventListener('click', ()=>{
+    const modal = document.getElementById('settingsModal');
+    if(modal.classList.contains('hidden')){
+      openSettingsModal('statuses');
+    } else {
+      closeSettingsModal();
+    }
+  });
+}
+
+const closeSettingsBtn = document.getElementById('closeSettings');
+if(closeSettingsBtn){
+  closeSettingsBtn.addEventListener('click', ()=>{
     closeSettingsModal();
-  }
-});
-document.getElementById('closeSettings').addEventListener('click', ()=>{
-  closeSettingsModal();
-});
-document.getElementById('addColumnBtn').addEventListener('click', async ()=>{
-  const title = document.getElementById('newColumnTitle').value.trim();
-  const color = document.getElementById('newColumnColor').value;
-  if(!title) return alert('title required');
-  await fetch('/api/column', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title, color})});
-  document.getElementById('newColumnTitle').value = '';
-  document.getElementById('newColumnColor').value = '#9aa0a6';
-  render();
-  renderStatusSettings();
-});
+  });
+}
 
-document.getElementById('addProjectBtn').addEventListener('click', async ()=>{
-  const name = document.getElementById('newProjectName').value.trim();
-  const color = document.getElementById('newProjectColor').value;
-  if(!name) return alert('name required');
-  await fetch('/api/project', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name, color})});
-  document.getElementById('newProjectName').value = '';
-  document.getElementById('newProjectColor').value = '#5b2e8a';
-  await render();
-  await renderProjectSettings();
-});
+const addColumnBtn = document.getElementById('addColumnBtn');
+if(addColumnBtn){
+  addColumnBtn.addEventListener('click', async ()=>{
+    const title = document.getElementById('newColumnTitle').value.trim();
+    const color = document.getElementById('newColumnColor').value;
+    if(!title) return alert('title required');
+    await fetch('/api/column', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title, color})});
+    document.getElementById('newColumnTitle').value = '';
+    document.getElementById('newColumnColor').value = '#9aa0a6';
+    render();
+    renderStatusSettings();
+  });
+}
 
-document.getElementById('downloadBoardBtn').addEventListener('click', ()=>{
-  downloadBoardJson();
-});
-document.getElementById('importBoardBtn').addEventListener('click', ()=>{
-  importBoardJson();
-});
+const addProjectBtn = document.getElementById('addProjectBtn');
+if(addProjectBtn){
+  addProjectBtn.addEventListener('click', async ()=>{
+    const name = document.getElementById('newProjectName').value.trim();
+    const color = document.getElementById('newProjectColor').value;
+    if(!name) return alert('name required');
+    await fetch('/api/project', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name, color})});
+    document.getElementById('newProjectName').value = '';
+    document.getElementById('newProjectColor').value = '#5b2e8a';
+    await render();
+    await renderProjectSettings();
+  });
+}
+
+const downloadBoardBtn = document.getElementById('downloadBoardBtn');
+if(downloadBoardBtn){
+  downloadBoardBtn.addEventListener('click', ()=>{
+    downloadBoardJson();
+  });
+}
+
+const importBoardBtn = document.getElementById('importBoardBtn');
+if(importBoardBtn){
+  importBoardBtn.addEventListener('click', ()=>{
+    importBoardJson();
+  });
+}
 
 // close modal when clicking backdrop
 document.addEventListener('click', (e)=>{
@@ -1755,11 +1779,14 @@ document.addEventListener('keydown', (e)=>{
 });
 
 // Apply initial truncation state to button
-const truncateBtn = document.getElementById('truncateBtn');
-if(cardTruncationEnabled){
-  truncateBtn.setAttribute('aria-pressed', 'true');
-  truncateBtn.classList.add('active');
+const truncateBtn2 = document.getElementById('truncateBtn');
+if(truncateBtn2 && cardTruncationEnabled){
+  truncateBtn2.setAttribute('aria-pressed', 'true');
+  truncateBtn2.classList.add('active');
 }
 
-// Initial render
-render();
+// Initial render (only on board view page)
+const boardEl = document.getElementById('board');
+if(boardEl){
+  render();
+}

@@ -59,7 +59,7 @@ let dropZonesVisible = false;
 function makeDropZone(beforeOrder, afterOrder, colId, isSameCol){
   const zone = document.createElement('div');
   zone.className = 'drop-zone' + (isSameCol ? ' drop-zone-reorder' : '') + ' visible';
-  if(!isSameCol) zone.textContent = 'Drop here to move';
+  if(isSameCol) zone.textContent = 'Drop here';
   if(beforeOrder !== null && !isNaN(beforeOrder)) zone.dataset.beforeOrder = beforeOrder;
   if(afterOrder !== null && !isNaN(afterOrder)) zone.dataset.afterOrder = afterOrder;
   zone.dataset.colId = colId;
@@ -105,12 +105,12 @@ function showDropZones(){
   if(dropZonesVisible) return;
   dropZonesVisible = true;
   document.querySelectorAll('.card-list').forEach(list => {
-    if(list.querySelector('.drop-zone')) return;
     const colEl = list.closest('[data-column]');
     const colId = colEl ? colEl.dataset.column : null;
     if(colId && colId === draggedCardColumnId){
-      // origin column: zones at top, between each pair of non-dragged cards, and at bottom
-      const cards = Array.from(list.querySelectorAll('.card:not(.dragging)'));
+      if(list.querySelector('.drop-zone')) return;
+      // origin column: zones at top, between all cards (including placeholder), and at bottom
+      const cards = Array.from(list.querySelectorAll('.card'));
       if(cards.length === 0){
         list.prepend(makeDropZone(null, null, colId, true));
       } else {
@@ -125,9 +125,31 @@ function showDropZones(){
         }
         list.appendChild(makeDropZone(parseFloat(cards[cards.length-1].dataset.order), null, colId, true));
       }
-    } else {
-      // other columns: single drop zone
-      list.appendChild(makeDropZone(null, null, colId, false));
+    } else if(colEl && !colEl.querySelector('.drop-zone-overlay')){
+      // foreign column: semi-transparent overlay covering the whole column
+      const zone = document.createElement('div');
+      zone.className = 'drop-zone drop-zone-overlay visible';
+      zone.textContent = 'Move here';
+      zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+      zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+      zone.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        zone.classList.remove('dragover');
+        hideDropZones();
+        const id = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text') || draggedCardId;
+        if(!id) return;
+        const res = await fetch('/api/card/' + id, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({column: colId})
+        });
+        if(!res.ok){ alert('Unable to move card. Please try again.'); render(); return; }
+        draggedCardId = null;
+        draggedCardColumnId = null;
+        render();
+      });
+      colEl.appendChild(zone);
     }
   });
 }
@@ -305,10 +327,25 @@ function createCardElement(card, projectMap) {
     e.dataTransfer.setData('text/plain', card.id);
     e.dataTransfer.setData('text', card.id);
     e.dataTransfer.effectAllowed = 'move';
-    setTimeout(() => { el.classList.add('dragging'); showDropZones(); }, 0);
+    setTimeout(() => {
+      el.classList.add('dragging');
+      el.addEventListener('dragover', (e2) => { e2.preventDefault(); el.classList.add('dragover-placeholder'); });
+      el.addEventListener('dragleave', () => el.classList.remove('dragover-placeholder'));
+      el.addEventListener('drop', (e2) => {
+        e2.preventDefault();
+        e2.stopPropagation();
+        el.classList.remove('dragover-placeholder');
+        hideDropZones();
+        draggedCardId = null;
+        draggedCardColumnId = null;
+        render();
+      });
+      showDropZones();
+    }, 0);
   });
   el.addEventListener('dragend', () => {
     el.classList.remove('dragging');
+    el.classList.remove('dragover-placeholder');
     draggedCardId = null;
     draggedCardColumnId = null;
     hideDropZones();

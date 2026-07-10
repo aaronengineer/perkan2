@@ -49,6 +49,12 @@ def _sanitize_card(card):
         sanitized['assignee'] = assignee
     color = card.get('color')
     sanitized['color'] = color if color else DEFAULT_CARD_COLOR
+    order = card.get('order')
+    if order is not None:
+        try:
+            sanitized['order'] = float(order)
+        except (TypeError, ValueError):
+            pass
     return sanitized
 
 
@@ -79,6 +85,10 @@ def _normalize_board(data):
                 sanitized['id'] = str(uuid.uuid4())
             seen_ids.add(sanitized['id'])
             normalized_cards.append(sanitized)
+        # assign order to any card that lacks one
+        for _i, _card in enumerate(normalized_cards):
+            if 'order' not in _card:
+                _card['order'] = float((_i + 1) * 1_000_000)
         normalized_columns.append({'id': col_id, 'title': title, 'color': color, 'hidden': hidden, 'cards': normalized_cards})
 
     normalized_projects = []
@@ -345,6 +355,8 @@ def create_card():
 
     for col in board['columns']:
         if col['id'] == column_id:
+            existing_orders = [c['order'] for c in col['cards'] if isinstance(c.get('order'), (int, float))]
+            card['order'] = float(max(existing_orders, default=0) + 1_000_000)
             col['cards'].append(card)
             _save_data(board)
             return jsonify(card), 201
@@ -356,6 +368,7 @@ def update_card(card_id):
     data = request.get_json() or {}
     target_col = data.get('column')
     position = data.get('position')  # optional integer
+    order = data.get('order')
     title = data.get('title')
     description = data.get('description')
     color = data.get('color')
@@ -408,6 +421,11 @@ def update_card(card_id):
             card_obj.pop('assignee', None)
     if links is not None:
         card_obj['links'] = _clean_links(links)
+    if order is not None:
+        try:
+            card_obj['order'] = float(order)
+        except (TypeError, ValueError):
+            pass
 
     if card_obj.get('project'):
         project_details = _find_project(board, card_obj['project'])

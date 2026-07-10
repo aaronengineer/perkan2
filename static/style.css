@@ -149,3 +149,10 @@ header{display:flex;flex-direction:column;gap:10px;padding:14px 20px;background:
 .split-pane::-webkit-scrollbar-thumb:hover{background:rgba(183,142,245,0.5)}
 
 .split-modal-content .modal-actions{margin-top:20px;padding-top:16px;border-top:1px solid rgba(183,142,245,0.2);display:flex;justify-content:flex-end;gap:8px;flex-shrink:0}
+
+/* Drop zones */
+.drop-zone{min-height:60px;border:2px dashed rgba(183,142,245,0.4);border-radius:6px;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.5);font-size:12px;margin:4px 0;transition:background 0.15s,border-color 0.15s,min-height 0.1s}
+.drop-zone:hover,.drop-zone.dragover{background:rgba(183,142,245,0.15);border-color:#b78ef5;color:#b78ef5}
+.drop-zone-reorder{min-height:6px;font-size:0;margin:2px 0}
+.drop-zone-reorder.dragover{min-height:20px;background:rgba(183,142,245,0.2);border-color:#b78ef5}
+.card.dragging{display:none}

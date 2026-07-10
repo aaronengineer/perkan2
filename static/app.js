@@ -2,6 +2,7 @@ let latestBoard = null;
 let activeProjectFilter = null;
 let cardTruncationEnabled = localStorage.getItem('cardTruncationEnabled') !== 'false';
 let draggedCardId = null;
+let draggedCardColumnId = null;
 async function fetchBoard() {
   const res = await fetch('/api/board');
   latestBoard = await res.json();
@@ -54,15 +55,80 @@ function collectProjectCounts(board){
 // keep descriptions as plain escaped text — markdown/link parsing is intentionally disabled
 
 let dropZonesVisible = false;
+
+function makeDropZone(beforeOrder, afterOrder, colId, isSameCol){
+  const zone = document.createElement('div');
+  zone.className = 'drop-zone' + (isSameCol ? ' drop-zone-reorder' : '') + ' visible';
+  if(!isSameCol) zone.textContent = 'Drop here to move';
+  if(beforeOrder !== null && !isNaN(beforeOrder)) zone.dataset.beforeOrder = beforeOrder;
+  if(afterOrder !== null && !isNaN(afterOrder)) zone.dataset.afterOrder = afterOrder;
+  zone.dataset.colId = colId;
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+  zone.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    zone.classList.remove('dragover');
+    hideDropZones();
+    const id = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text') || draggedCardId;
+    if(!id) return;
+    if(isSameCol){
+      const before = zone.dataset.beforeOrder !== undefined ? parseFloat(zone.dataset.beforeOrder) : null;
+      const after = zone.dataset.afterOrder !== undefined ? parseFloat(zone.dataset.afterOrder) : null;
+      let newOrder;
+      if(before === null && after === null) newOrder = 1000000;
+      else if(before === null) newOrder = parseFloat(zone.dataset.afterOrder) - 1000000;
+      else if(after === null) newOrder = parseFloat(zone.dataset.beforeOrder) + 1000000;
+      else newOrder = (parseFloat(zone.dataset.beforeOrder) + parseFloat(zone.dataset.afterOrder)) / 2;
+      const res = await fetch('/api/card/' + id, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({order: newOrder})
+      });
+      if(!res.ok){ alert('Unable to reorder card. Please try again.'); render(); return; }
+    } else {
+      const res = await fetch('/api/card/' + id, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({column: colId})
+      });
+      if(!res.ok){ alert('Unable to move card. Please try again.'); render(); return; }
+    }
+    draggedCardId = null;
+    draggedCardColumnId = null;
+    render();
+  });
+  return zone;
+}
+
 function showDropZones(){
   if(dropZonesVisible) return;
   dropZonesVisible = true;
   document.querySelectorAll('.card-list').forEach(list => {
     if(list.querySelector('.drop-zone')) return;
-    const zone = document.createElement('div');
-    zone.className = 'drop-zone visible';
-    zone.textContent = 'Drop here to move';
-    list.appendChild(zone);
+    const colEl = list.closest('[data-column]');
+    const colId = colEl ? colEl.dataset.column : null;
+    if(colId && colId === draggedCardColumnId){
+      // origin column: zones at top, between each pair of non-dragged cards, and at bottom
+      const cards = Array.from(list.querySelectorAll('.card:not(.dragging)'));
+      if(cards.length === 0){
+        list.prepend(makeDropZone(null, null, colId, true));
+      } else {
+        list.prepend(makeDropZone(null, parseFloat(cards[0].dataset.order), colId, true));
+        for(let i = 0; i < cards.length - 1; i++){
+          const z = makeDropZone(
+            parseFloat(cards[i].dataset.order),
+            parseFloat(cards[i+1].dataset.order),
+            colId, true
+          );
+          cards[i].insertAdjacentElement('afterend', z);
+        }
+        list.appendChild(makeDropZone(parseFloat(cards[cards.length-1].dataset.order), null, colId, true));
+      }
+    } else {
+      // other columns: single drop zone
+      list.appendChild(makeDropZone(null, null, colId, false));
+    }
   });
 }
 
@@ -196,6 +262,7 @@ function createCardElement(card, projectMap) {
   el.className = 'card' + (cardTruncationEnabled ? ' card-truncated' : '');
   el.draggable = true;
   el.dataset.id = card.id;
+  el.dataset.order = card.order !== undefined ? card.order : 0;
   el.innerHTML = `
     <div class="card-title">${escapeHtml(card.title)}</div>
     <div class="card-desc">${escapeHtmlWithBr(card.description || '')}</div>
@@ -233,13 +300,17 @@ function createCardElement(card, projectMap) {
 
   el.addEventListener('dragstart', (e) => {
     draggedCardId = card.id;
+    const colEl = el.closest('[data-column]');
+    draggedCardColumnId = colEl ? colEl.dataset.column : null;
     e.dataTransfer.setData('text/plain', card.id);
     e.dataTransfer.setData('text', card.id);
     e.dataTransfer.effectAllowed = 'move';
-    showDropZones();
+    setTimeout(() => { el.classList.add('dragging'); showDropZones(); }, 0);
   });
   el.addEventListener('dragend', () => {
+    el.classList.remove('dragging');
     draggedCardId = null;
+    draggedCardColumnId = null;
     hideDropZones();
   });
 
@@ -402,6 +473,8 @@ async function render(options = {}){
     list.addEventListener('drop', async (e)=>{
       e.preventDefault();
       hideDropZones();
+      // same-column reorders are handled by the individual drop zones
+      if(col.id === draggedCardColumnId) return;
       const id = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text') || draggedCardId;
       if(!id){
         return;
@@ -416,10 +489,12 @@ async function render(options = {}){
         return;
       }
       draggedCardId = null;
+      draggedCardColumnId = null;
       render();
     });
 
-    for(const card of visibleCards){
+    const sortedCards = [...visibleCards].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    for(const card of sortedCards){
       list.appendChild(createCardElement(card, projectMap));
     }
 

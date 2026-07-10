@@ -32,44 +32,52 @@
   text-transform: uppercase;
 }
 
-.list-table-row {
-  border-bottom: 1px solid #e8e8e8;
-  transition: background-color 0.2s ease;
-  cursor: grab;
-}
-
-.list-table-row:hover {
-  background-color: rgba(91, 46, 138, 0.04) !important;
-}
-
-.list-table-row.dragging {
-  opacity: 0.4;
-  cursor: grabbing;
-  background-color: rgba(183, 142, 245, 0.1) !important;
-  border: 2px dashed rgba(183, 142, 245, 0.5);
-}
-
 .list-cell {
   padding: 12px 16px;
   vertical-align: middle;
   font-size: 14px;
   color: #202124;
+  text-align: left;
 }
 
 .list-cell-title {
   font-weight: 600;
-  max-width: 300px;
+  min-width: 200px;
   word-break: break-word;
+}
+
+.list-cell-description {
+  min-width: 250px;
+  max-width: 400px;
+}
+
+.list-desc-content {
+  display: block;
+  line-height: 1.4;
+}
+
+.list-desc-content.list-desc-truncated {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .list-cell-content {
   display: block;
 }
 
-.list-cell-project,
-.list-cell-assignee,
+.list-cell-project {
+  min-width: 140px;
+}
+
+.list-cell-assignee {
+  min-width: 140px;
+}
+
 .list-cell-column {
-  text-align: center;
+  min-width: 120px;
 }
 
 .list-project-badge,
@@ -94,6 +102,7 @@
 
 .list-cell-links,
 .list-cell-edit {
+  min-width: 60px;
   text-align: center;
 }
 

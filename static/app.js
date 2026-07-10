@@ -1118,14 +1118,18 @@ document.querySelectorAll('.settings-tab-btn').forEach(btn => {
 
 const truncateBtn = document.getElementById('truncateBtn');
 if(truncateBtn){
-  truncateBtn.addEventListener('click', ()=>{
-    cardTruncationEnabled = !cardTruncationEnabled;
-    localStorage.setItem('cardTruncationEnabled', cardTruncationEnabled);
-    const btn = document.getElementById('truncateBtn');
-    btn.setAttribute('aria-pressed', cardTruncationEnabled ? 'true' : 'false');
-    btn.classList.toggle('active', cardTruncationEnabled);
-    render({useLatest: true});
-  });
+  // Only attach listener if we're on the board view (boardEl exists)
+  const boardEl = document.getElementById('board');
+  if (boardEl) {
+    truncateBtn.addEventListener('click', ()=>{
+      cardTruncationEnabled = !cardTruncationEnabled;
+      localStorage.setItem('cardTruncationEnabled', cardTruncationEnabled);
+      const btn = document.getElementById('truncateBtn');
+      btn.setAttribute('aria-pressed', cardTruncationEnabled ? 'true' : 'false');
+      btn.classList.toggle('active', cardTruncationEnabled);
+      render({useLatest: true});
+    });
+  }
 }
 
 const settingsBtn = document.getElementById('settingsBtn');

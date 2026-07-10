@@ -88,6 +88,22 @@ function listCreateTableRow(card, index, projectMap) {
   `;
   row.appendChild(titleCell);
 
+  // Description column
+  const descCell = document.createElement('td');
+  descCell.className = 'list-cell list-cell-description';
+  const desc = card.description || '';
+  if (desc) {
+    // Check if truncation is enabled (global variable from app.js)
+    const isTruncated = typeof cardTruncationEnabled !== 'undefined' ? cardTruncationEnabled : localStorage.getItem('cardTruncationEnabled') !== 'false';
+    const truncateClass = isTruncated ? ' list-desc-truncated' : '';
+    descCell.innerHTML = `
+      <div class="list-cell-content list-desc-content${truncateClass}">${listEscapeHtml(desc)}</div>
+    `;
+  } else {
+    descCell.innerHTML = '<span class="list-muted">—</span>';
+  }
+  row.appendChild(descCell);
+
   // Project column
   const projectCell = document.createElement('td');
   projectCell.className = 'list-cell list-cell-project';
@@ -194,7 +210,7 @@ function listMakeDropZone(beforeIndex, afterIndex) {
   zone.dataset.afterIndex = afterIndex !== null ? afterIndex : '';
 
   const cell = document.createElement('td');
-  cell.colSpan = 6;
+  cell.colSpan = 7;
   cell.className = 'list-drop-zone-cell';
   cell.textContent = 'Drop here';
   zone.appendChild(cell);
@@ -326,7 +342,7 @@ async function listRender(options = {}) {
   const headerRow = document.createElement('tr');
   headerRow.className = 'list-table-header';
 
-  const headers = ['Title', 'Project', 'Assignee', 'Column', 'Links', 'Actions'];
+  const headers = ['Title', 'Description', 'Project', 'Assignee', 'Status', '', ''];
   headers.forEach(headerText => {
     const th = document.createElement('th');
     th.className = 'list-table-header-cell';
@@ -440,4 +456,22 @@ function listRenderProjectFilters(board, projectMap) {
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
   listRender();
+
+  // Setup truncate button
+  const truncateBtn = document.getElementById('truncateBtn');
+  if (truncateBtn) {
+    truncateBtn.addEventListener('click', () => {
+      cardTruncationEnabled = !cardTruncationEnabled;
+      localStorage.setItem('cardTruncationEnabled', cardTruncationEnabled);
+      const btn = document.getElementById('truncateBtn');
+      btn.setAttribute('aria-pressed', cardTruncationEnabled ? 'true' : 'false');
+      btn.classList.toggle('active', cardTruncationEnabled);
+      listRender({ useLatest: true });
+    });
+    // Set initial state
+    if (typeof cardTruncationEnabled !== 'undefined' && cardTruncationEnabled) {
+      truncateBtn.setAttribute('aria-pressed', 'true');
+      truncateBtn.classList.add('active');
+    }
+  }
 });

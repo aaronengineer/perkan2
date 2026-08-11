@@ -1,15 +1,18 @@
-from flask import Flask, jsonify, request, render_template, abort, send_file
+from flask import Flask, jsonify, request, render_template, abort, send_file, redirect
 import json
 import os
 import threading
 import uuid
 import re
 import time
+import datetime
 import logging
 import errno
 import shutil
 import random
 import copy
+
+import gcal
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 # Basic logging for debugging slow I/O
@@ -31,6 +34,23 @@ DEFAULT_BOARD = {
     ],
     "projects": []
 }
+
+
+def _sanitize_due_date(value, all_day):
+    if not value:
+        return None
+    value = str(value).strip()
+    if not value:
+        return None
+    try:
+        if all_day:
+            datetime.date.fromisoformat(value)
+        else:
+            # Accept 'YYYY-MM-DDTHH:MM' or with seconds/offset
+            datetime.datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return value
 
 
 def _sanitize_card(card):
@@ -55,6 +75,29 @@ def _sanitize_card(card):
             sanitized['order'] = float(order)
         except (TypeError, ValueError):
             pass
+
+    all_day = bool(card.get('all_day', False))
+    due_date = _sanitize_due_date(card.get('due_date'), all_day)
+    if due_date:
+        sanitized['due_date'] = due_date
+        sanitized['all_day'] = all_day
+
+    # Sync bookkeeping fields are only ever written by our own code paths,
+    # but pass them through on import/merge so round-tripping an export
+    # doesn't strand cards that are already linked to a calendar event.
+    gcal_event_id = card.get('gcal_event_id')
+    if gcal_event_id:
+        sanitized['gcal_event_id'] = str(gcal_event_id)
+    gcal_updated = card.get('gcal_updated')
+    if gcal_updated:
+        sanitized['gcal_updated'] = str(gcal_updated)
+    updated_at = card.get('updated_at')
+    if updated_at is not None:
+        try:
+            sanitized['updated_at'] = float(updated_at)
+        except (TypeError, ValueError):
+            pass
+
     return sanitized
 
 
@@ -221,6 +264,26 @@ def _save_data(data):
 _ensure_data_file()
 
 
+def _push_card_to_gcal(card):
+    """Best-effort push of a card's due date to Google Calendar.
+
+    Sync failures must never block saving the card locally, so errors
+    are logged and swallowed. Returns True if the card was mutated
+    (gcal_event_id/gcal_updated set) and needs to be persisted again.
+    """
+    try:
+        if card.get('due_date'):
+            return gcal.upsert_event_for_card(card)
+        if card.get('gcal_event_id'):
+            gcal.delete_event_for_card(card)
+            card.pop('gcal_event_id', None)
+            card.pop('gcal_updated', None)
+            return True
+    except gcal.GcalError as exc:
+        logger.warning('Google Calendar push sync failed for card %s: %s', card.get('id'), exc)
+    return False
+
+
 def _clean_links(raw_links):
     """Return a list of {'text','url'} objects with minimal validation."""
     cleaned = []
@@ -334,6 +397,8 @@ def create_card():
     project_name = (data.get('project') or '').strip()
     assignee = (data.get('assignee') or '').strip()
     links = _clean_links(data.get('links'))
+    all_day = bool(data.get('all_day', False))
+    due_date = _sanitize_due_date(data.get('due_date'), all_day)
     if not title:
         return jsonify({'error': 'title required'}), 400
 
@@ -342,8 +407,12 @@ def create_card():
         'id': str(uuid.uuid4()),
         'title': title,
         'description': description,
-        'links': links
+        'links': links,
+        'updated_at': time.time(),
     }
+    if due_date:
+        card['due_date'] = due_date
+        card['all_day'] = all_day
     if assignee:
         card['assignee'] = assignee
     project_details = None
@@ -364,6 +433,8 @@ def create_card():
             card['order'] = float(max(existing_orders, default=0) + 1_000_000)
             col['cards'].append(card)
             _save_data(board)
+            if _push_card_to_gcal(card):
+                _save_data(board)
             return jsonify(card), 201
     return jsonify({'error': 'column not found'}), 404
 
@@ -380,6 +451,9 @@ def update_card(card_id):
     links = data.get('links')
     project_payload = data.get('project') if 'project' in data else None
     assignee_payload = data.get('assignee') if 'assignee' in data else None
+    due_date_payload = data.get('due_date') if 'due_date' in data else None
+    all_day_payload = bool(data.get('all_day', False))
+    clear_due_date = 'due_date' in data and not str(data.get('due_date') or '').strip()
 
     board = _load_data()
     # find and remove card from any column
@@ -431,6 +505,15 @@ def update_card(card_id):
             card_obj['order'] = float(order)
         except (TypeError, ValueError):
             pass
+    if clear_due_date:
+        card_obj.pop('due_date', None)
+        card_obj.pop('all_day', None)
+    elif due_date_payload is not None:
+        due_date = _sanitize_due_date(due_date_payload, all_day_payload)
+        if due_date:
+            card_obj['due_date'] = due_date
+            card_obj['all_day'] = all_day_payload
+    card_obj['updated_at'] = time.time()
 
     if card_obj.get('project'):
         project_details = _find_project(board, card_obj['project'])
@@ -464,6 +547,8 @@ def update_card(card_id):
         destination_column['cards'].insert(insert_idx, card_obj)
 
     _save_data(board)
+    if _push_card_to_gcal(card_obj):
+        _save_data(board)
     return jsonify(card_obj)
 
 
@@ -473,6 +558,10 @@ def delete_card(card_id):
     for col in board['columns']:
         for i, c in enumerate(col['cards']):
             if c['id'] == card_id:
+                try:
+                    gcal.delete_event_for_card(c)
+                except gcal.GcalError as exc:
+                    logger.warning('Google Calendar delete sync failed for card %s: %s', card_id, exc)
                 del col['cards'][i]
                 _save_data(board)
                 return jsonify({'deleted': True})
@@ -644,6 +733,58 @@ def delete_project(project_idx):
     _update_project_references(board, removed.get('name'), None)
     _save_data(board)
     return jsonify({'deleted': True})
+
+
+@app.route('/api/gcal/status', methods=['GET'])
+def gcal_status():
+    return jsonify(gcal.status())
+
+
+@app.route('/auth/google/login', methods=['GET'])
+def gcal_login():
+    if not gcal.is_configured():
+        abort(400, description='GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET are not configured on the server')
+    return redirect(gcal.get_auth_url())
+
+
+@app.route('/auth/google/callback', methods=['GET'])
+def gcal_callback():
+    error = request.args.get('error')
+    if error:
+        return redirect('/?gcal_error=' + error)
+    code = request.args.get('code')
+    state = request.args.get('state')
+    if not code or not gcal.verify_state(state):
+        abort(400, description='invalid or expired OAuth state')
+    try:
+        gcal.exchange_code(code)
+    except Exception as exc:
+        logger.warning('Google Calendar OAuth exchange failed: %s', exc)
+        return redirect('/?gcal_error=exchange_failed')
+    return redirect('/?gcal_connected=1')
+
+
+@app.route('/auth/google/disconnect', methods=['POST'])
+def gcal_disconnect():
+    gcal.disconnect()
+    return jsonify({'disconnected': True})
+
+
+@app.route('/api/gcal/sync', methods=['POST'])
+def gcal_sync_now():
+    if not gcal.is_connected():
+        return jsonify({'error': 'not connected'}), 400
+    board = _load_data()
+    try:
+        changed = gcal.pull_changes(board)
+    except gcal.GcalError as exc:
+        return jsonify({'error': str(exc)}), 502
+    if changed:
+        _save_data(board)
+    return jsonify({'status': 'ok', 'changed': changed})
+
+
+gcal.start_background_sync(_load_data, _save_data)
 
 
 if __name__ == '__main__':

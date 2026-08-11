@@ -31,6 +31,8 @@ header{display:flex;flex-direction:column;gap:10px;padding:14px 20px;background:
 .card-footer-center-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:center}
 .card-footer-right{flex:1;display:flex;justify-content:flex-end;align-items:center}
 .card .card-links{font-size:13px;color:#4b4b4b;display:flex;align-items:center;gap:4px;background:rgba(0,0,0,0.05);padding:2px 8px;border-radius:14px;font-weight:600;cursor:pointer}
+.card .card-due{font-size:12px;color:#4b4b4b;display:flex;align-items:center;gap:4px;background:rgba(0,0,0,0.05);padding:2px 8px;border-radius:14px;font-weight:600;white-space:nowrap}
+.card .card-due-overdue{color:#b3261e;background:rgba(179,38,30,0.12)}
 .card .card-project{font-size:13px;color:var(--project-pill-text,#1b1b25);background:var(--project-pill-bg,rgba(255,255,255,0.85));padding:2px 12px;border-radius:16px;font-weight:600;box-shadow:0 2px 6px rgba(0,0,0,0.12);white-space:nowrap;pointer-events:auto;border:2px solid var(--project-pill-border,rgba(0,0,0,0.12));transition:background 0.2s ease,border-color 0.2s ease,color 0.2s ease;cursor:pointer;user-select:none}
 .card .card-assignee{font-size:13px;color:#27445d;background:#e8f2fb;padding:2px 12px;border-radius:16px;font-weight:600;box-shadow:0 2px 6px rgba(0,0,0,0.1);white-space:nowrap;border:1px solid rgba(39,68,93,0.25)}
 .card .edit{border:0;background:transparent;cursor:pointer;font-size:16px;padding:2px 4px;opacity:0;transition:opacity 0.2s ease}
@@ -133,6 +135,29 @@ header{display:flex;flex-direction:column;gap:10px;padding:14px 20px;background:
 #importFileInput{width:100%;padding:8px;border-radius:6px;border:1px solid #563baf;background:#1b1b25;color:#f4f6f8;box-sizing:border-box}
 .import-mode{display:flex;flex-direction:column;gap:6px;font-size:13px;color:rgba(255,255,255,0.85);margin-top:10px}
 .import-actions{margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+
+.due-date-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.due-date-row input[type="datetime-local"]{padding:8px;border:1px solid #555;border-radius:6px;background:#1b1b25;color:#f4f6f8}
+.due-date-allday{display:flex;align-items:center;gap:6px;font-size:13px;color:rgba(255,255,255,0.85);font-weight:normal}
+#editCardClearDueDate{background:#37214f;color:#fff;border:1px solid #6d4fb3;border-radius:6px;padding:6px 10px;cursor:pointer}
+#editCardClearDueDate:hover{background:#4a2c6d}
+.due-date-sync-badge{font-size:12px;font-weight:normal;color:#8bb9ff;margin-left:8px}
+.due-date-sync-badge.hidden{display:none}
+
+.gcal-settings-panel{display:flex;flex-direction:column;gap:14px;margin-top:10px}
+.gcal-status-card{background:#131320;border:1px solid rgba(183,142,245,0.35);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.gcal-status-row{display:flex;align-items:center;gap:8px;font-size:14px}
+.gcal-status-dot{width:10px;height:10px;border-radius:50%;background:#6b7280;flex:0 0 auto}
+.gcal-status-dot.connected{background:#2ca02c}
+.gcal-status-dot.disconnected{background:#6b7280}
+.gcal-status-dot.error{background:#d62728}
+.gcal-status-detail{font-size:12px;color:rgba(255,255,255,0.6)}
+.gcal-settings-actions{display:flex;gap:10px;flex-wrap:wrap}
+#gcalConnectBtn,#gcalSyncNowBtn{background:#563baf;color:#fff;border:1px solid #7d61e3;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:600}
+#gcalConnectBtn:hover,#gcalSyncNowBtn:hover{background:#6b4fe3}
+#gcalDisconnectBtn{background:#37214f;color:#fff;border:1px solid #6d4fb3;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:600}
+#gcalDisconnectBtn:hover{background:#4a2c6d}
+.gcal-settings-hint{font-size:12px;color:rgba(255,255,255,0.6);line-height:1.5}
 
 /* Split Task Modal */
 .split-modal-content{position:relative;background:#0f0f18;padding:18px;border-radius:8px;z-index:100;min-width:90%;max-width:1200px;width:1000px;border:2px solid transparent;box-shadow:0 12px 30px rgba(0,0,0,0.45);display:flex;flex-direction:column;max-height:85vh;overflow-y:auto}

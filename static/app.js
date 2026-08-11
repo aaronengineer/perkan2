@@ -274,6 +274,22 @@ projectPreview.addEventListener('click', (e) => {
   }
 });
 
+function formatDueDateBadge(card){
+  if(!card.due_date) return '';
+  const isAllDay = !!card.all_day;
+  const d = new Date(isAllDay ? card.due_date + 'T00:00:00' : card.due_date);
+  if(isNaN(d.getTime())) return '';
+  const now = new Date();
+  const overdue = isAllDay
+    ? d < new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    : d < now;
+  const label = isAllDay
+    ? d.toLocaleDateString(undefined, {month:'short', day:'numeric'})
+    : d.toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
+  const gcalIcon = card.gcal_event_id ? ' 🔗' : '';
+  return `<div class="card-due${overdue ? ' card-due-overdue' : ''}" title="Due ${escapeHtml(label)}${card.gcal_event_id ? ' (synced to Google Calendar)' : ''}">📅 ${escapeHtml(label)}${gcalIcon}</div>`;
+}
+
 function createCardElement(card, projectMap) {
   const linkCount = Array.isArray(card.links) ? card.links.length : 0;
   const projectName = card.project || '';
@@ -291,6 +307,7 @@ function createCardElement(card, projectMap) {
     <div class="card-footer">
       <div class="card-footer-left">
         ${linkCount > 0 ? `<div class="card-links" title="${linkCount} link${linkCount!==1?'s':''}">🔗 ${linkCount}</div>` : ''}
+        ${formatDueDateBadge(card)}
       </div>
       <div class="card-footer-center">
         ${projectName || assignee ? `
@@ -568,6 +585,7 @@ settingsModal.innerHTML = `
       <button type="button" class="settings-tab-btn active" data-tab="statuses">Statuses</button>
       <button type="button" class="settings-tab-btn" data-tab="projects">Projects</button>
       <button type="button" class="settings-tab-btn" data-tab="import">Import/Export</button>
+      <button type="button" class="settings-tab-btn" data-tab="calendar">📅 Calendar</button>
       <button type="button" class="settings-tab-btn" data-tab="about">About</button>
     </div>
     <div class="settings-tab-panels">
@@ -606,6 +624,27 @@ settingsModal.innerHTML = `
               <button type="button" id="importBoardBtn">Import kanban.json</button>
             </div>
           </section>
+        </div>
+      </div>
+      <div class="settings-tab-panel" data-tab="calendar">
+        <div class="gcal-settings-panel">
+          <div class="gcal-status-card">
+            <div class="gcal-status-row">
+              <span class="gcal-status-dot" id="gcalStatusDot"></span>
+              <span id="gcalStatusText">Checking status…</span>
+            </div>
+            <div class="gcal-status-detail" id="gcalStatusDetail"></div>
+          </div>
+          <div class="gcal-settings-actions">
+            <button type="button" id="gcalConnectBtn">Connect Google Calendar</button>
+            <button type="button" id="gcalSyncNowBtn" style="display:none">Sync now</button>
+            <button type="button" id="gcalDisconnectBtn" style="display:none">Disconnect</button>
+          </div>
+          <p class="gcal-settings-hint">
+            Cards with a due date are pushed to your Google Calendar as events, and changes made on the
+            calendar side (including new events) are pulled back in roughly every minute. Only one Google
+            account can be connected per board.
+          </p>
         </div>
       </div>
       <div class="settings-tab-panel" data-tab="about">
@@ -1057,8 +1096,99 @@ function activateSettingsTab(tabId){
     renderStatusSettings();
   } else if(tabId === 'projects'){
     renderProjectSettings();
+  } else if(tabId === 'calendar'){
+    renderGcalSettings();
   }
 }
+
+async function renderGcalSettings(){
+  const dot = document.getElementById('gcalStatusDot');
+  const text = document.getElementById('gcalStatusText');
+  const detail = document.getElementById('gcalStatusDetail');
+  const connectBtn = document.getElementById('gcalConnectBtn');
+  const syncBtn = document.getElementById('gcalSyncNowBtn');
+  const disconnectBtn = document.getElementById('gcalDisconnectBtn');
+  if(!dot) return;
+  try {
+    const res = await fetch('/api/gcal/status');
+    const status = await res.json();
+    if(!status.configured){
+      dot.className = 'gcal-status-dot disconnected';
+      text.textContent = 'Not configured';
+      detail.textContent = 'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET on the server to enable Google Calendar sync.';
+      connectBtn.style.display = 'none';
+      syncBtn.style.display = 'none';
+      disconnectBtn.style.display = 'none';
+      return;
+    }
+    if(status.connected){
+      dot.className = 'gcal-status-dot' + (status.last_sync_error ? ' error' : ' connected');
+      text.textContent = status.connected_email ? `Connected as ${status.connected_email}` : 'Connected';
+      const lastSync = status.last_sync ? new Date(status.last_sync * 1000).toLocaleString() : 'never';
+      detail.textContent = status.last_sync_error
+        ? `Last sync error: ${status.last_sync_error}`
+        : `Calendar: ${status.calendar_id} · Last synced: ${lastSync}`;
+      connectBtn.style.display = 'none';
+      syncBtn.style.display = 'inline-block';
+      disconnectBtn.style.display = 'inline-block';
+    } else {
+      dot.className = 'gcal-status-dot disconnected';
+      text.textContent = 'Not connected';
+      detail.textContent = '';
+      connectBtn.style.display = 'inline-block';
+      syncBtn.style.display = 'none';
+      disconnectBtn.style.display = 'none';
+    }
+  } catch(err) {
+    dot.className = 'gcal-status-dot error';
+    text.textContent = 'Unable to reach server';
+    detail.textContent = String(err.message || err);
+  }
+}
+
+const gcalConnectBtn = document.getElementById('gcalConnectBtn');
+if(gcalConnectBtn){
+  gcalConnectBtn.addEventListener('click', () => {
+    window.location.href = '/auth/google/login';
+  });
+}
+const gcalDisconnectBtn = document.getElementById('gcalDisconnectBtn');
+if(gcalDisconnectBtn){
+  gcalDisconnectBtn.addEventListener('click', async () => {
+    if(!confirm('Disconnect Google Calendar? Existing calendar events will not be deleted, but cards will stop syncing.')) return;
+    await fetch('/auth/google/disconnect', {method: 'POST'});
+    renderGcalSettings();
+  });
+}
+const gcalSyncNowBtn = document.getElementById('gcalSyncNowBtn');
+if(gcalSyncNowBtn){
+  gcalSyncNowBtn.addEventListener('click', async () => {
+    gcalSyncNowBtn.disabled = true;
+    gcalSyncNowBtn.textContent = 'Syncing…';
+    try {
+      await fetch('/api/gcal/sync', {method: 'POST'});
+      if(document.getElementById('board')){
+        await render();
+      } else if(typeof listRender === 'function'){
+        await listRender();
+      }
+    } finally {
+      gcalSyncNowBtn.disabled = false;
+      gcalSyncNowBtn.textContent = 'Sync now';
+      renderGcalSettings();
+    }
+  });
+}
+
+(function showGcalRedirectNotice(){
+  const params = new URLSearchParams(window.location.search);
+  if(params.has('gcal_connected')){
+    window.history.replaceState({}, '', window.location.pathname);
+  } else if(params.has('gcal_error')){
+    alert('Google Calendar connection failed: ' + params.get('gcal_error'));
+    window.history.replaceState({}, '', window.location.pathname);
+  }
+})();
 
 function openSettingsModal(tabId){
   const modal = document.getElementById('settingsModal');
@@ -1227,6 +1357,12 @@ cardEditModal.innerHTML = `
       </div>
       <label>Assignee:</label>
       <input id="editCardAssignee" class="modal-input" placeholder="Assignee (optional)" />
+      <label>Due date: <span class="due-date-sync-badge hidden" id="editCardDueSyncBadge" title="Synced to Google Calendar">🔗 synced</span></label>
+      <div class="due-date-row">
+        <input id="editCardDueDate" class="modal-input" type="datetime-local" />
+        <label class="due-date-allday"><input type="checkbox" id="editCardAllDay" /> All day</label>
+        <button type="button" id="editCardClearDueDate" title="Clear due date">✕</button>
+      </div>
       <label>Description:</label>
       <textarea id="editCardDesc" placeholder="Description (optional)"></textarea>
       <div class="links-section">
@@ -1324,6 +1460,11 @@ async function openCardEditModal(card, isNew = false){
   const editProjectInput = document.getElementById('editCardProject');
   populateProjectInput(editProjectInput, card.project || '');
   renderLinkRows(card.links || []);
+  document.getElementById('editCardAllDay').checked = !!card.all_day;
+  document.getElementById('editCardDueDate').value = card.due_date
+    ? (card.all_day ? card.due_date.slice(0,10) + 'T00:00' : card.due_date.slice(0,16))
+    : '';
+  document.getElementById('editCardDueSyncBadge').classList.toggle('hidden', !card.gcal_event_id);
 
   // Update title with more prominent styling
   const titleEl = document.getElementById('editCardModalTitle');
@@ -1372,6 +1513,18 @@ function closeCardEditModal(){
   modal.classList.add('hidden');
 }
 
+function readDueDateFromForm(){
+  const allDay = document.getElementById('editCardAllDay').checked;
+  const raw = document.getElementById('editCardDueDate').value;
+  if(!raw) return {due_date: '', all_day: allDay};
+  return {due_date: allDay ? raw.slice(0,10) : raw, all_day: allDay};
+}
+
+document.getElementById('editCardClearDueDate').addEventListener('click', ()=>{
+  document.getElementById('editCardDueDate').value = '';
+  document.getElementById('editCardAllDay').checked = false;
+});
+
 document.getElementById('editCardCancelBtn').addEventListener('click', ()=>{ closeCardEditModal(); });
 document.getElementById('editCardDeleteBtn').addEventListener('click', async ()=>{
   if(!confirm('Delete this task?')) return;
@@ -1390,7 +1543,8 @@ document.getElementById('editCardDuplicateBtn').addEventListener('click', async 
   if(!title) return alert('title required');
   const links = collectLinkRows();
   const project = document.getElementById('editCardProject').value;
-  
+  const {due_date, all_day} = readDueDateFromForm();
+
   // Find the column of the original card
   const board = await fetchBoard();
   let columnId = null;
@@ -1403,12 +1557,12 @@ document.getElementById('editCardDuplicateBtn').addEventListener('click', async 
     }
     if(columnId) break;
   }
-  
+
   if(!columnId) return alert('Could not find column for duplicate');
-  
+
   // Create new card with duplicated data
   try {
-    const res = await fetch('/api/card', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title, description, links, project, assignee, column: columnId})});
+    const res = await fetch('/api/card', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title, description, links, project, assignee, due_date, all_day, column: columnId})});
     if(!res.ok) throw new Error('Failed to create card');
     const newCard = await res.json();
     if(!newCard || !newCard.id) throw new Error('No ID returned for new card');
@@ -1428,8 +1582,9 @@ document.getElementById('editCardSaveBtn').addEventListener('click', async ()=>{
   if(!title) return alert('title required');
   const links = collectLinkRows();
   const project = document.getElementById('editCardProject').value;
+  const {due_date, all_day} = readDueDateFromForm();
   try {
-    const res = await fetch('/api/card/' + cardId, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({title, description, links, project, assignee})});
+    const res = await fetch('/api/card/' + cardId, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({title, description, links, project, assignee, due_date, all_day})});
     if(!res.ok) throw new Error('Failed to save card');
     closeCardEditModal();
     render();

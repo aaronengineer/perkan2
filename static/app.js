@@ -294,6 +294,8 @@ function createCardElement(card, projectMap) {
   const linkCount = Array.isArray(card.links) ? card.links.length : 0;
   const projectName = card.project || '';
   const assignee = card.assignee || '';
+  const linkedUser = card.assigned_user_id ? latestUsers.find(u => u.id === card.assigned_user_id) : null;
+  const linkedUserName = linkedUser ? linkedUser.display_name : '';
   const projectDetails = projectMap && projectMap.get(projectName);
   const projectColor = projectDetails && projectDetails.color ? projectDetails.color : null;
   const el = document.createElement('div');
@@ -310,10 +312,11 @@ function createCardElement(card, projectMap) {
         ${formatDueDateBadge(card)}
       </div>
       <div class="card-footer-center">
-        ${projectName || assignee ? `
+        ${projectName || assignee || linkedUserName ? `
           <div class="card-footer-center-meta">
             ${projectName ? `<div class="card-project" title="Project: ${escapeHtml(projectName)}">${escapeHtml(projectName)}</div>` : ''}
             ${assignee ? `<div class="card-assignee" title="Assignee: ${escapeHtml(assignee)}">👤 ${escapeHtml(assignee)}</div>` : ''}
+            ${linkedUserName ? `<div class="card-linked-user" title="Calendar syncs to ${escapeHtml(linkedUserName)}">📅 ${escapeHtml(linkedUserName)}</div>` : ''}
           </div>
         ` : ''}
       </div>
@@ -585,6 +588,7 @@ settingsModal.innerHTML = `
       <button type="button" class="settings-tab-btn active" data-tab="statuses">Statuses</button>
       <button type="button" class="settings-tab-btn" data-tab="projects">Projects</button>
       <button type="button" class="settings-tab-btn" data-tab="import">Import/Export</button>
+      <button type="button" class="settings-tab-btn" data-tab="users">👤 Users</button>
       <button type="button" class="settings-tab-btn" data-tab="calendar">📅 Calendar</button>
       <button type="button" class="settings-tab-btn" data-tab="about">About</button>
     </div>
@@ -626,6 +630,19 @@ settingsModal.innerHTML = `
           </section>
         </div>
       </div>
+      <div class="settings-tab-panel" data-tab="users">
+        <div id="usersList" class="users-list"></div>
+        <div class="add-user">
+          <input id="newUserUsername" placeholder="Username" autocomplete="off" />
+          <input id="newUserDisplayName" placeholder="Display name (optional)" autocomplete="off" />
+          <input id="newUserPassword" type="password" placeholder="Password (min 8 chars)" autocomplete="new-password" />
+          <button id="addUserBtn">Add User</button>
+        </div>
+        <p class="users-hint">
+          Any logged-in user can add or remove other users. Only you can change your own password.
+          Each user connects their own Google Calendar from the 📅 Calendar tab while logged in as them.
+        </p>
+      </div>
       <div class="settings-tab-panel" data-tab="calendar">
         <div class="gcal-settings-panel">
           <div class="gcal-status-card">
@@ -641,9 +658,10 @@ settingsModal.innerHTML = `
             <button type="button" id="gcalDisconnectBtn" style="display:none">Disconnect</button>
           </div>
           <p class="gcal-settings-hint">
-            Cards with a due date are pushed to your Google Calendar as events, and changes made on the
-            calendar side (including new events) are pulled back in roughly every minute. Only one Google
-            account can be connected per board.
+            This connects <strong>your</strong> Google account<span id="gcalHintWhoami"></span> — each person
+            connects their own. Cards with a due date <strong>assigned to you</strong> (via "Linked user" on the
+            card) are pushed to your calendar as events, and changes made on the calendar side (including new
+            events) are pulled back in roughly every minute.
           </p>
         </div>
       </div>
@@ -832,6 +850,101 @@ async function renderProjectSettings(){
   });
 
   refreshProjectInputs();
+}
+
+const CURRENT_USER = window.PERKAN_CURRENT_USER || null;
+let latestUsers = [];
+
+async function fetchUsers(){
+  const res = await fetch('/api/users');
+  const data = await res.json();
+  latestUsers = Array.isArray(data.users) ? data.users : [];
+  return latestUsers;
+}
+
+async function renderUserSettings(){
+  const list = document.getElementById('usersList');
+  if(!list) return;
+  const usersData = await fetchUsers();
+  list.innerHTML = '';
+  if(!usersData.length){
+    const empty = document.createElement('div');
+    empty.className = 'project-empty';
+    empty.textContent = 'No users yet';
+    list.appendChild(empty);
+  }
+  usersData.forEach(u => {
+    const isSelf = CURRENT_USER && CURRENT_USER.id === u.id;
+    const row = document.createElement('div');
+    row.className = 'user-row';
+    row.innerHTML = `
+      <input class="user-display-name" data-id="${u.id}" value="${escapeHtml(u.display_name || '')}" placeholder="Display name" />
+      <span class="user-username">@${escapeHtml(u.username)}${isSelf ? ' (you)' : ''}</span>
+      ${isSelf ? `<input class="user-new-password" type="password" data-id="${u.id}" placeholder="New password (optional)" autocomplete="new-password" />` : '<span></span>'}
+      <button class="user-delete" data-id="${u.id}" ${isSelf ? 'disabled title="Log in as someone else to delete this account"' : ''}>Delete</button>
+    `;
+    list.appendChild(row);
+  });
+
+  list.querySelectorAll('.user-display-name').forEach(inp => {
+    inp.addEventListener('change', async (e) => {
+      const id = e.target.dataset.id;
+      const display_name = e.target.value.trim();
+      await fetch('/api/users/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({display_name})});
+      await renderUserSettings();
+      render({useLatest: true});
+    });
+  });
+  list.querySelectorAll('.user-new-password').forEach(inp => {
+    inp.addEventListener('change', async (e) => {
+      const id = e.target.dataset.id;
+      const password = e.target.value;
+      if(!password) return;
+      if(password.length < 8){ alert('password must be at least 8 characters'); e.target.value=''; return; }
+      const res = await fetch('/api/users/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password})});
+      if(res.ok){ alert('Password updated'); } else { const err = await res.json(); alert(err.error || 'Failed to update password'); }
+      e.target.value = '';
+    });
+  });
+  list.querySelectorAll('.user-delete').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const id = e.target.dataset.id;
+      if(!confirm('Delete this user? Cards assigned to them will be unassigned.')) return;
+      const res = await fetch('/api/users/' + id, {method:'DELETE'});
+      if(!res.ok){ const err = await res.json(); alert(err.error || 'Failed to delete user'); return; }
+      await renderUserSettings();
+      refreshAssignedUserSelects();
+    });
+  });
+
+  refreshAssignedUserSelects();
+}
+
+const addUserBtn = document.getElementById('addUserBtn');
+if(addUserBtn){
+  addUserBtn.addEventListener('click', async () => {
+    const username = document.getElementById('newUserUsername').value.trim();
+    const display_name = document.getElementById('newUserDisplayName').value.trim();
+    const password = document.getElementById('newUserPassword').value;
+    if(!username || !password) return alert('username and password required');
+    const res = await fetch('/api/users', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username, display_name, password})});
+    if(!res.ok){ const err = await res.json(); alert(err.error || 'Failed to create user'); return; }
+    document.getElementById('newUserUsername').value = '';
+    document.getElementById('newUserDisplayName').value = '';
+    document.getElementById('newUserPassword').value = '';
+    await renderUserSettings();
+  });
+}
+
+function refreshAssignedUserSelects(){
+  document.querySelectorAll('select[data-assigned-user-select]').forEach(sel => {
+    const current = sel.value;
+    sel.innerHTML = '<option value="">Unassigned</option>' +
+      latestUsers.map(u => `<option value="${u.id}">${escapeHtml(u.display_name)}</option>`).join('');
+    if(latestUsers.some(u => u.id === current)){
+      sel.value = current;
+    }
+  });
 }
 
 const projectPickerRegistry = new Map();
@@ -1096,6 +1209,8 @@ function activateSettingsTab(tabId){
     renderStatusSettings();
   } else if(tabId === 'projects'){
     renderProjectSettings();
+  } else if(tabId === 'users'){
+    renderUserSettings();
   } else if(tabId === 'calendar'){
     renderGcalSettings();
   }
@@ -1109,6 +1224,10 @@ async function renderGcalSettings(){
   const syncBtn = document.getElementById('gcalSyncNowBtn');
   const disconnectBtn = document.getElementById('gcalDisconnectBtn');
   if(!dot) return;
+  const whoami = document.getElementById('gcalHintWhoami');
+  if(whoami){
+    whoami.textContent = CURRENT_USER ? ` (you're logged in as ${CURRENT_USER.display_name})` : '';
+  }
   try {
     const res = await fetch('/api/gcal/status');
     const status = await res.json();
@@ -1357,6 +1476,8 @@ cardEditModal.innerHTML = `
       </div>
       <label>Assignee:</label>
       <input id="editCardAssignee" class="modal-input" placeholder="Assignee (optional)" />
+      <label>Linked user <span class="linked-user-hint">(whose Google Calendar this syncs to)</span>:</label>
+      <select id="editCardAssignedUser" class="modal-input" data-assigned-user-select></select>
       <label>Due date: <span class="due-date-sync-badge hidden" id="editCardDueSyncBadge" title="Synced to Google Calendar">🔗 synced</span></label>
       <div class="due-date-row">
         <input id="editCardDueDate" class="modal-input" type="datetime-local" />
@@ -1457,6 +1578,8 @@ async function openCardEditModal(card, isNew = false){
   document.getElementById('editCardTitle').value = card.title || '';
   document.getElementById('editCardDesc').value = card.description || '';
   document.getElementById('editCardAssignee').value = card.assignee || '';
+  refreshAssignedUserSelects();
+  document.getElementById('editCardAssignedUser').value = card.assigned_user_id || '';
   const editProjectInput = document.getElementById('editCardProject');
   populateProjectInput(editProjectInput, card.project || '');
   renderLinkRows(card.links || []);
@@ -1540,6 +1663,7 @@ document.getElementById('editCardDuplicateBtn').addEventListener('click', async 
   const title = document.getElementById('editCardTitle').value.trim();
   const description = document.getElementById('editCardDesc').value.trim();
   const assignee = document.getElementById('editCardAssignee').value.trim();
+  const assigned_user_id = document.getElementById('editCardAssignedUser').value;
   if(!title) return alert('title required');
   const links = collectLinkRows();
   const project = document.getElementById('editCardProject').value;
@@ -1562,7 +1686,7 @@ document.getElementById('editCardDuplicateBtn').addEventListener('click', async 
 
   // Create new card with duplicated data
   try {
-    const res = await fetch('/api/card', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title, description, links, project, assignee, due_date, all_day, column: columnId})});
+    const res = await fetch('/api/card', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title, description, links, project, assignee, assigned_user_id, due_date, all_day, column: columnId})});
     if(!res.ok) throw new Error('Failed to create card');
     const newCard = await res.json();
     if(!newCard || !newCard.id) throw new Error('No ID returned for new card');
@@ -1579,12 +1703,13 @@ document.getElementById('editCardSaveBtn').addEventListener('click', async ()=>{
   const title = document.getElementById('editCardTitle').value.trim();
   const description = document.getElementById('editCardDesc').value.trim();
   const assignee = document.getElementById('editCardAssignee').value.trim();
+  const assigned_user_id = document.getElementById('editCardAssignedUser').value;
   if(!title) return alert('title required');
   const links = collectLinkRows();
   const project = document.getElementById('editCardProject').value;
   const {due_date, all_day} = readDueDateFromForm();
   try {
-    const res = await fetch('/api/card/' + cardId, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({title, description, links, project, assignee, due_date, all_day})});
+    const res = await fetch('/api/card/' + cardId, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({title, description, links, project, assignee, assigned_user_id, due_date, all_day})});
     if(!res.ok) throw new Error('Failed to save card');
     closeCardEditModal();
     render();
@@ -1943,6 +2068,10 @@ if(truncateBtn2 && cardTruncationEnabled){
   truncateBtn2.setAttribute('aria-pressed', 'true');
   truncateBtn2.classList.add('active');
 }
+
+// Local users are needed for the card editor's linked-user dropdown on
+// both the board and list pages, so fetch them regardless of view.
+fetchUsers().then(refreshAssignedUserSelects);
 
 // Initial render (only on board view page)
 const boardEl = document.getElementById('board');

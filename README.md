@@ -29,29 +29,53 @@ From the `perkan` directory:
 
 The service runs Gunicorn with conservative settings (2 workers, 4 threads, 60s timeout).
 
+## Users & Login
+
+PerKan now sits behind a login. The first time you start the app with no accounts yet, the
+`/login` page becomes a "create your account" form instead — whoever fills that in becomes the
+first user. After that, everyone needs a username/password to reach the board.
+
+There's no admin/role concept: any logged-in user can add, rename, or delete any other user from
+**Settings → 👤 Users** (mirroring how Projects/Statuses work — trusted-small-team style, not
+locked down). The one restriction is that you can only change your **own** password, and you
+can't delete the account you're currently logged in as (log in as someone else first).
+
+Local accounts live in `data/users.json` with hashed passwords (already gitignored). Deleting a
+user unassigns their cards and disconnects their Google Calendar; it doesn't delete their cards.
+
 ## Google Calendar Sync
 
-PerKan has no user accounts, so this connects the *whole board* to a single Google account —
-there's no per-card "which calendar" choice, just one shared connection.
+Each user connects **their own** Google account (personal Gmail or Google Workspace — both use
+the identical OAuth flow, no special-casing needed) from **Settings → 📅 Calendar** while logged
+in as themselves. There's no single board-wide calendar anymore.
 
 **What it does:**
 
-- Give a card a due date and it's pushed to Google Calendar as an event (30 minutes long, or
-  all-day if you check "All day").
-- Editing or deleting the card updates or deletes the linked event.
-- A background job polls Google roughly once a minute (configurable) and pulls changes back:
-  edits to an event's title/description/time are copied onto the linked card, and events
-  created directly in Google Calendar are imported as new cards.
+- Cards have a free-text "Assignee" field (unchanged, just a label) and a separate **"Linked
+  user"** dropdown, blank/unassigned by default. The linked user is what determines calendar
+  sync — give a card a due date *and* a linked user who's connected their calendar, and it's
+  pushed to that person's Google Calendar as an event (30 minutes long, or all-day if you check
+  "All day"). Unassigned cards, or cards linked to someone who hasn't connected, just don't sync.
+- Reassigning a card's linked user moves its event off the old person's calendar and onto the
+  new one's.
+- Editing or deleting the card updates or deletes the linked event. A background job polls each
+  connected user's calendar roughly once a minute (configurable) and pulls changes back: edits
+  to an event's title/description/time are copied onto the linked card, and events created
+  directly in someone's Google Calendar are imported as new cards linked to them.
 - If an event is deleted on the Google side, PerKan **unlinks** it from the card rather than
   deleting the card — a task disappearing because someone declined or deleted a calendar
   invite would be a bad surprise. Deleting the card in PerKan does delete the calendar event.
 - Conflicts (edited in both places since the last sync) are resolved last-write-wins, compared
   by timestamp.
+- Connecting your calendar retroactively pushes any cards already linked to you that have a due
+  date but never synced (e.g. someone assigned you a card before you connected).
 
-**Setup:**
+**Setup (one-time, by whoever runs the server):**
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), create a project, enable the
-   **Google Calendar API**, and create an **OAuth 2.0 Client ID** (Web application type).
+   **Google Calendar API**, and create an **OAuth 2.0 Client ID** (Web application type). This
+   is shared infrastructure — one OAuth app serves every PerKan user, each of whom grants it
+   access to their own calendar individually.
 2. Add an authorized redirect URI matching `GOOGLE_REDIRECT_URI` below (default
    `http://127.0.0.1:5000/auth/google/callback`).
 3. Set these environment variables (e.g. in a `.env` file, which is already gitignored):
@@ -61,15 +85,22 @@ there's no per-card "which calendar" choice, just one shared connection.
    | `GOOGLE_CLIENT_ID` | *(required)* | OAuth client ID |
    | `GOOGLE_CLIENT_SECRET` | *(required)* | OAuth client secret |
    | `GOOGLE_REDIRECT_URI` | `http://127.0.0.1:5000/auth/google/callback` | Must match the Cloud Console redirect URI exactly |
-   | `GOOGLE_CALENDAR_ID` | `primary` | Which calendar to sync |
+   | `GOOGLE_CALENDAR_ID` | `primary` | Which calendar to sync — "primary" resolves to whichever account is connected, so this one setting works for everyone's own primary calendar |
    | `GCAL_TIMEZONE` | `UTC` | IANA timezone (e.g. `America/New_York`) used to interpret card due-date/times. Set this to your actual timezone or events will show at the wrong time. |
-   | `GCAL_SYNC_INTERVAL_SECONDS` | `60` | How often to poll for calendar-side changes |
-   | `GCAL_IMPORT_NEW_EVENTS` | `true` | Whether events created directly in Google Calendar become new cards |
+   | `GCAL_SYNC_INTERVAL_SECONDS` | `60` | How often to poll for calendar-side changes, per connected user |
+   | `GCAL_IMPORT_NEW_EVENTS` | `true` | Whether events created directly in someone's Google Calendar become new cards |
    | `GCAL_DEFAULT_COLUMN` | `todo` | Column newly-imported events land in |
    | `GCAL_SYNC_WINDOW_DAYS` | `90` | How far ahead to look for events on the first (non-incremental) sync |
+   | `SECRET_KEY` | *(auto-generated, persisted to `data/secret_key.txt`)* | Flask session signing key. Only set this yourself if you want to invalidate all sessions on demand or share one key across a fresh deployment. |
 
-4. Start the app and open **Settings → 📅 Calendar → Connect Google Calendar**.
+4. Each person then logs into PerKan and opens **Settings → 📅 Calendar → Connect Google
+   Calendar** individually.
 
-**Note on multiple Gunicorn workers:** each worker runs its own polling thread. They throttle
-themselves against duplicate work via the shared token file, but if you want a strictly single
-poller, run with `--workers 1` when Calendar sync is enabled.
+**Note on multiple Gunicorn workers:** each worker runs its own polling thread, one pass per
+connected user per tick. They throttle themselves against duplicate work per-user via each
+user's token file, but if you want a strictly single poller, run with `--workers 1` when
+Calendar sync is enabled.
+
+**Upgrading from the single-board calendar connection:** if you used the older board-wide
+connection, delete `data/gcal_token.json` (now unused) and have each user connect individually
+via Settings.

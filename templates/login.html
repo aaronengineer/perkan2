@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>{{ 'Create your account' if bootstrap else 'Log in' }} - Personal Kanban</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
+  </head>
+  <body class="login-page">
+    <div class="login-card">
+      <h1>{{ 'Create your account' if bootstrap else 'Log in to PerKan' }}</h1>
+      {% if bootstrap %}
+        <p class="login-hint">No accounts exist yet. The account you create here is the first one.</p>
+      {% endif %}
+      {% if error %}
+        <div class="login-error">{{ error }}</div>
+      {% endif %}
+      <form method="POST" class="login-form">
+        {% if bootstrap %}
+          <label>Display name (optional):</label>
+          <input type="text" name="display_name" placeholder="How your name shows on cards" />
+        {% endif %}
+        <label>Username:</label>
+        <input type="text" name="username" required autofocus />
+        <label>Password:</label>
+        <input type="password" name="password" required minlength="8" />
+        <button type="submit">{{ 'Create account' if bootstrap else 'Log in' }}</button>
+      </form>
+    </div>
+  </body>
+</html>

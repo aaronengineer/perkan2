@@ -1,6 +1,7 @@
-from flask import Flask, jsonify, request, render_template, abort, send_file, redirect
+from flask import Flask, jsonify, request, render_template, abort, send_file, redirect, session
 import json
 import os
+import secrets
 import threading
 import uuid
 import re
@@ -13,6 +14,7 @@ import random
 import copy
 
 import gcal
+import users
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 # Basic logging for debugging slow I/O
@@ -21,7 +23,49 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 DATA_FILE = os.path.join(DATA_DIR, 'kanban.json')
+SECRET_KEY_FILE = os.path.join(DATA_DIR, 'secret_key.txt')
 _lock = threading.Lock()
+
+
+def _load_secret_key():
+    """Session cookies need a stable key across restarts and across
+    gunicorn worker processes, so persist one to disk instead of
+    generating a fresh one per process (which would invalidate every
+    session on every restart/reload)."""
+    env_key = os.environ.get('SECRET_KEY')
+    if env_key:
+        return env_key
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
+    if os.path.exists(SECRET_KEY_FILE):
+        with open(SECRET_KEY_FILE, 'r', encoding='utf-8') as f:
+            existing = f.read().strip()
+            if existing:
+                return existing
+    new_key = secrets.token_hex(32)
+    tmp = SECRET_KEY_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write(new_key)
+    os.replace(tmp, SECRET_KEY_FILE)
+    return new_key
+
+
+app.secret_key = _load_secret_key()
+
+# Routes reachable without an authenticated session.
+PUBLIC_ENDPOINTS = {'login', 'static'}
+
+
+@app.before_request
+def _require_login():
+    if request.endpoint in PUBLIC_ENDPOINTS or request.endpoint is None:
+        return None
+    user_id = session.get('user_id')
+    if user_id and users.get_user(user_id):
+        return None
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'login required'}), 401
+    return redirect('/login')
 
 DEFAULT_CARD_COLOR = '#5b2e8a'
 
@@ -67,6 +111,9 @@ def _sanitize_card(card):
     assignee = (card.get('assignee') or '').strip()
     if assignee:
         sanitized['assignee'] = assignee
+    assigned_user_id = (card.get('assigned_user_id') or '').strip()
+    if assigned_user_id and users.get_user(assigned_user_id):
+        sanitized['assigned_user_id'] = assigned_user_id
     color = card.get('color')
     sanitized['color'] = color if color else DEFAULT_CARD_COLOR
     order = card.get('order')
@@ -91,6 +138,9 @@ def _sanitize_card(card):
     gcal_updated = card.get('gcal_updated')
     if gcal_updated:
         sanitized['gcal_updated'] = str(gcal_updated)
+    gcal_user_id = card.get('gcal_user_id')
+    if gcal_user_id:
+        sanitized['gcal_user_id'] = str(gcal_user_id)
     updated_at = card.get('updated_at')
     if updated_at is not None:
         try:
@@ -265,23 +315,35 @@ _ensure_data_file()
 
 
 def _push_card_to_gcal(card):
-    """Best-effort push of a card's due date to Google Calendar.
+    """Best-effort push of a card's due date to its assigned user's
+    Google Calendar. A card only syncs when it has both a due_date and
+    an assigned_user_id for a user who has connected their calendar;
+    reassigning a card moves its event from the old user's calendar to
+    the new one.
 
     Sync failures must never block saving the card locally, so errors
     are logged and swallowed. Returns True if the card was mutated
-    (gcal_event_id/gcal_updated set) and needs to be persisted again.
+    (gcal_event_id/gcal_updated/gcal_user_id changed) and needs to be
+    persisted again.
     """
+    assigned_user_id = card.get('assigned_user_id')
+    needs_event = bool(card.get('due_date')) and bool(assigned_user_id)
+    stale_link = bool(card.get('gcal_event_id')) and (
+        not needs_event or card.get('gcal_user_id') != assigned_user_id
+    )
+    changed = False
     try:
-        if card.get('due_date'):
-            return gcal.upsert_event_for_card(card)
-        if card.get('gcal_event_id'):
+        if stale_link:
             gcal.delete_event_for_card(card)
             card.pop('gcal_event_id', None)
             card.pop('gcal_updated', None)
-            return True
+            card.pop('gcal_user_id', None)
+            changed = True
+        if needs_event:
+            changed = gcal.upsert_event_for_card(card, assigned_user_id) or changed
     except gcal.GcalError as exc:
         logger.warning('Google Calendar push sync failed for card %s: %s', card.get('id'), exc)
-    return False
+    return changed
 
 
 def _clean_links(raw_links):
@@ -341,14 +403,116 @@ def _merge_boards(existing, incoming):
 
 
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    bootstrap = users.count_users() == 0
+    if session.get('user_id') and users.get_user(session['user_id']):
+        return redirect('/')
+
+    error = None
+    if request.method == 'POST':
+        username = (request.form.get('username') or '').strip()
+        password = request.form.get('password') or ''
+        display_name = (request.form.get('display_name') or '').strip()
+
+        if bootstrap:
+            try:
+                user = users.create_user(username, password, display_name)
+                session['user_id'] = user['id']
+                return redirect('/')
+            except users.UserError as exc:
+                error = str(exc)
+        else:
+            user = users.verify_login(username, password)
+            if user:
+                session['user_id'] = user['id']
+                return redirect('/')
+            error = 'invalid username or password'
+
+    return render_template('login.html', bootstrap=bootstrap, error=error)
+
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return redirect('/login')
+
+
+@app.route('/api/session', methods=['GET'])
+def api_session():
+    user = users.get_user(session.get('user_id'))
+    return jsonify({'user': user})
+
+
+@app.route('/api/users', methods=['GET'])
+def list_users():
+    return jsonify({'users': users.list_users()})
+
+
+@app.route('/api/users', methods=['POST'])
+def create_user():
+    data = request.get_json() or {}
+    try:
+        user = users.create_user(data.get('username'), data.get('password'), data.get('display_name'))
+    except users.UserError as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify(user), 201
+
+
+@app.route('/api/users/<user_id>', methods=['PUT'])
+def update_user(user_id):
+    data = request.get_json() or {}
+    password = data.get('password')
+    if password is not None and session.get('user_id') != user_id:
+        return jsonify({'error': 'you can only change your own password'}), 403
+    try:
+        user = users.update_user(user_id, display_name=data.get('display_name'), password=password)
+    except users.UserError as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify(user)
+
+
+@app.route('/api/users/<user_id>', methods=['DELETE'])
+def delete_user(user_id):
+    if session.get('user_id') == user_id:
+        return jsonify({'error': "you can't delete the account you're logged in as"}), 400
+    if not users.get_user(user_id):
+        return jsonify({'error': 'user not found'}), 404
+
+    board = _load_data()
+    changed = False
+    for col in board.get('columns', []):
+        for card in col.get('cards', []):
+            if card.get('assigned_user_id') == user_id:
+                card.pop('assigned_user_id', None)
+                changed = True
+            if card.get('gcal_user_id') == user_id:
+                try:
+                    gcal.delete_event_for_card(card)
+                except gcal.GcalError as exc:
+                    logger.warning('Google Calendar cleanup failed while deleting user %s: %s', user_id, exc)
+                card.pop('gcal_event_id', None)
+                card.pop('gcal_updated', None)
+                card.pop('gcal_user_id', None)
+                changed = True
+    if changed:
+        _save_data(board)
+
+    gcal.disconnect(user_id)
+    users.delete_user(user_id)
+    return jsonify({'deleted': True})
+
+
 @app.route('/')
 def index():
-    return render_template('index.html')
+    current_user = users.get_user(session.get('user_id'))
+    return render_template('index.html', current_user=current_user)
 
 
 @app.route('/list')
 def list_view():
-    return render_template('list.html')
+    current_user = users.get_user(session.get('user_id'))
+    return render_template('list.html', current_user=current_user)
 
 
 @app.route('/api/board', methods=['GET'])
@@ -396,11 +560,14 @@ def create_card():
     hidden = data.get('hidden')
     project_name = (data.get('project') or '').strip()
     assignee = (data.get('assignee') or '').strip()
+    assigned_user_id = (data.get('assigned_user_id') or '').strip()
     links = _clean_links(data.get('links'))
     all_day = bool(data.get('all_day', False))
     due_date = _sanitize_due_date(data.get('due_date'), all_day)
     if not title:
         return jsonify({'error': 'title required'}), 400
+    if assigned_user_id and not users.get_user(assigned_user_id):
+        return jsonify({'error': 'assigned user not found'}), 400
 
     board = _load_data()
     card = {
@@ -415,6 +582,8 @@ def create_card():
         card['all_day'] = all_day
     if assignee:
         card['assignee'] = assignee
+    if assigned_user_id:
+        card['assigned_user_id'] = assigned_user_id
     project_details = None
     if project_name:
         project_details = _ensure_project(board, project_name)
@@ -451,6 +620,8 @@ def update_card(card_id):
     links = data.get('links')
     project_payload = data.get('project') if 'project' in data else None
     assignee_payload = data.get('assignee') if 'assignee' in data else None
+    assigned_user_payload = data.get('assigned_user_id') if 'assigned_user_id' in data else None
+    clear_assigned_user = 'assigned_user_id' in data and not str(data.get('assigned_user_id') or '').strip()
     due_date_payload = data.get('due_date') if 'due_date' in data else None
     all_day_payload = bool(data.get('all_day', False))
     clear_due_date = 'due_date' in data and not str(data.get('due_date') or '').strip()
@@ -498,6 +669,14 @@ def update_card(card_id):
             card_obj['assignee'] = normalized_assignee
         else:
             card_obj.pop('assignee', None)
+    if clear_assigned_user:
+        card_obj.pop('assigned_user_id', None)
+    elif assigned_user_payload is not None:
+        normalized_user_id = (assigned_user_payload or '').strip()
+        if normalized_user_id and users.get_user(normalized_user_id):
+            card_obj['assigned_user_id'] = normalized_user_id
+        elif normalized_user_id:
+            return jsonify({'error': 'assigned user not found'}), 400
     if links is not None:
         card_obj['links'] = _clean_links(links)
     if order is not None:
@@ -735,48 +914,72 @@ def delete_project(project_idx):
     return jsonify({'deleted': True})
 
 
+def _push_pending_cards_for_user(board, user_id):
+    """After a user connects their calendar, catch up any cards already
+    assigned to them (with a due date) that never got synced because
+    they weren't connected yet."""
+    changed = False
+    for col in board.get('columns', []):
+        for card in col.get('cards', []):
+            if card.get('assigned_user_id') != user_id or not card.get('due_date'):
+                continue
+            if card.get('gcal_event_id') and card.get('gcal_user_id') == user_id:
+                continue
+            if _push_card_to_gcal(card):
+                changed = True
+    return changed
+
+
 @app.route('/api/gcal/status', methods=['GET'])
 def gcal_status():
-    return jsonify(gcal.status())
+    if not session.get('user_id'):
+        return jsonify({'error': 'login required'}), 401
+    return jsonify(gcal.status(session['user_id']))
 
 
 @app.route('/auth/google/login', methods=['GET'])
 def gcal_login():
     if not gcal.is_configured():
         abort(400, description='GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET are not configured on the server')
-    return redirect(gcal.get_auth_url())
+    return redirect(gcal.get_auth_url(session['user_id']))
 
 
 @app.route('/auth/google/callback', methods=['GET'])
 def gcal_callback():
+    user_id = session.get('user_id')
     error = request.args.get('error')
     if error:
         return redirect('/?gcal_error=' + error)
     code = request.args.get('code')
     state = request.args.get('state')
-    if not code or not gcal.verify_state(state):
+    if not code or not user_id or not gcal.verify_state(user_id, state):
         abort(400, description='invalid or expired OAuth state')
     try:
-        gcal.exchange_code(code)
+        gcal.exchange_code(user_id, code)
     except Exception as exc:
-        logger.warning('Google Calendar OAuth exchange failed: %s', exc)
+        logger.warning('Google Calendar OAuth exchange failed for user %s: %s', user_id, exc)
         return redirect('/?gcal_error=exchange_failed')
+
+    board = _load_data()
+    if _push_pending_cards_for_user(board, user_id):
+        _save_data(board)
     return redirect('/?gcal_connected=1')
 
 
 @app.route('/auth/google/disconnect', methods=['POST'])
 def gcal_disconnect():
-    gcal.disconnect()
+    gcal.disconnect(session['user_id'])
     return jsonify({'disconnected': True})
 
 
 @app.route('/api/gcal/sync', methods=['POST'])
 def gcal_sync_now():
-    if not gcal.is_connected():
+    user_id = session['user_id']
+    if not gcal.is_connected(user_id):
         return jsonify({'error': 'not connected'}), 400
     board = _load_data()
     try:
-        changed = gcal.pull_changes(board)
+        changed = gcal.pull_changes_for_user(user_id, board)
     except gcal.GcalError as exc:
         return jsonify({'error': str(exc)}), 502
     if changed:

@@ -56,6 +56,8 @@ def _public(user):
         'username': user['username'],
         'display_name': user.get('display_name') or user['username'],
         'created_at': user.get('created_at'),
+        'has_password': bool(user.get('password_hash')),
+        'google_linked': bool(user.get('google_id')),
     }
 
 
@@ -85,11 +87,14 @@ def _find_by_username(users, username):
     return next((u for u in users if u['username'].lower() == username), None)
 
 
-def create_user(username, password, display_name=None):
+def create_user(username, password, display_name=None, google_id=None, google_email=None):
+    """password may be None for a Google-only account (created via Sign
+    in with Google) that has no local password to fall back on — such a
+    user can only log in through Google until they set one themselves."""
     username = (username or '').strip()
     if not USERNAME_RE.match(username or ''):
         raise UserError('username must be 2-32 characters: letters, numbers, "_", "." or "-"')
-    if not password or len(password) < 8:
+    if password is not None and len(password) < 8:
         raise UserError('password must be at least 8 characters')
 
     with _lock:
@@ -100,7 +105,9 @@ def create_user(username, password, display_name=None):
             'id': str(uuid.uuid4()),
             'username': username,
             'display_name': (display_name or '').strip() or username,
-            'password_hash': generate_password_hash(password),
+            'password_hash': generate_password_hash(password) if password else None,
+            'google_id': google_id,
+            'google_email': google_email,
             'created_at': time.time(),
         }
         users.append(user)
@@ -111,11 +118,48 @@ def create_user(username, password, display_name=None):
 def verify_login(username, password):
     users = _load()
     user = _find_by_username(users, username)
-    if not user:
+    if not user or not user.get('password_hash'):
         return None
     if not check_password_hash(user['password_hash'], password or ''):
         return None
     return _public(user)
+
+
+def find_by_google_id(google_id):
+    if not google_id:
+        return None
+    for u in _load():
+        if u.get('google_id') == google_id:
+            return _public(u)
+    return None
+
+
+def link_google_account(user_id, google_id, google_email):
+    with _lock:
+        users = _load()
+        user = next((u for u in users if u['id'] == user_id), None)
+        if not user:
+            raise UserError('user not found')
+        user['google_id'] = google_id
+        user['google_email'] = google_email
+        _save(users)
+        return _public(user)
+
+
+def generate_unique_username(base):
+    """Turn an email local-part (or any free text) into an available
+    username, appending a numeric suffix on collision."""
+    cleaned = re.sub(r'[^a-zA-Z0-9_.-]', '', base or '')[:28]
+    if len(cleaned) < 2:
+        cleaned = (cleaned + 'user')[:28]
+    with _lock:
+        existing = {u['username'].lower() for u in _load()}
+        candidate = cleaned
+        suffix = 1
+        while candidate.lower() in existing:
+            suffix += 1
+            candidate = f'{cleaned}{suffix}'
+        return candidate
 
 
 def update_user(user_id, display_name=None, password=None):

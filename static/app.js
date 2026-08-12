@@ -879,8 +879,8 @@ async function renderUserSettings(){
     row.className = 'user-row';
     row.innerHTML = `
       <input class="user-display-name" data-id="${u.id}" value="${escapeHtml(u.display_name || '')}" placeholder="Display name" />
-      <span class="user-username">@${escapeHtml(u.username)}${isSelf ? ' (you)' : ''}</span>
-      ${isSelf ? `<input class="user-new-password" type="password" data-id="${u.id}" placeholder="New password (optional)" autocomplete="new-password" />` : '<span></span>'}
+      <span class="user-username">@${escapeHtml(u.username)}${isSelf ? ' (you)' : ''}${u.google_linked ? ' <span class="user-google-badge" title="Signs in with Google">G</span>' : ''}</span>
+      ${isSelf ? `<input class="user-new-password" type="password" data-id="${u.id}" placeholder="${u.has_password ? 'New password (optional)' : 'Set a password (optional)'}" autocomplete="new-password" />` : '<span></span>'}
       <button class="user-delete" data-id="${u.id}" ${isSelf ? 'disabled title="Log in as someone else to delete this account"' : ''}>Delete</button>
     `;
     list.appendChild(row);

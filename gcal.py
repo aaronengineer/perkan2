@@ -34,8 +34,11 @@ _token_lock = threading.Lock()
 
 AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
+USERINFO_ENDPOINT = 'https://www.googleapis.com/oauth2/v2/userinfo'
 API_BASE = 'https://www.googleapis.com/calendar/v3'
-SCOPE = 'https://www.googleapis.com/auth/calendar'
+# identity scopes let the same OAuth grant double as "Sign in with
+# Google" (see app.py's /auth/google/sso), not just calendar access.
+SCOPE = 'openid email profile https://www.googleapis.com/auth/calendar'
 EXTENDED_PROP_KEY = 'perkan_card_id'
 DEFAULT_EVENT_DURATION_MINUTES = 30
 
@@ -131,13 +134,8 @@ def status(user_id):
     }
 
 
-def get_auth_url(user_id):
+def _build_auth_url(state):
     cfg = _config()
-    state = ''.join(random.choices(string.ascii_letters + string.digits, k=24))
-    token = _load_token(user_id)
-    token['oauth_state'] = state
-    token['oauth_state_created'] = time.time()
-    _save_token(user_id, token)
     params = {
         'client_id': cfg['client_id'],
         'redirect_uri': cfg['redirect_uri'],
@@ -152,6 +150,27 @@ def get_auth_url(user_id):
     return f'{AUTH_ENDPOINT}?{query}'
 
 
+def get_auth_url(user_id):
+    """'Connect my calendar' flow for an already-logged-in user. The
+    pending state is stashed in that user's own token file since we
+    already know who they are."""
+    state = ''.join(random.choices(string.ascii_letters + string.digits, k=24))
+    token = _load_token(user_id)
+    token['oauth_state'] = state
+    token['oauth_state_created'] = time.time()
+    _save_token(user_id, token)
+    return _build_auth_url(state)
+
+
+def build_sso_auth_url():
+    """'Sign in with Google' flow for a not-yet-logged-in visitor —
+    there's no user (and thus no token file) to stash state in yet, so
+    the caller (app.py) is responsible for holding onto the returned
+    state itself (in the Flask session) until the callback."""
+    state = ''.join(random.choices(string.ascii_letters + string.digits, k=24))
+    return _build_auth_url(state), state
+
+
 def verify_state(user_id, state):
     token = _load_token(user_id)
     saved = token.get('oauth_state')
@@ -161,7 +180,27 @@ def verify_state(user_id, state):
     return (time.time() - created) < 600  # 10 minute window
 
 
-def exchange_code(user_id, code):
+def _fetch_identity(access_token):
+    """Returns {'id', 'email', 'name'} — 'id' is Google's stable
+    per-account identifier (the OIDC 'sub' claim), used to match a
+    Google account back to a PerKan user across sign-ins even if their
+    email later changes."""
+    try:
+        resp = requests.get(
+            USERINFO_ENDPOINT,
+            headers={'Authorization': f'Bearer {access_token}'}, timeout=10)
+        if resp.ok:
+            data = resp.json()
+            return {'id': data.get('id'), 'email': data.get('email'), 'name': data.get('name')}
+    except requests.RequestException:
+        pass
+    return {'id': None, 'email': None, 'name': None}
+
+
+def _exchange_code_raw(code):
+    """POST the authorization code to Google. Returns (token_payload,
+    identity) without persisting anything — callers decide where the
+    resulting token belongs."""
     cfg = _config()
     resp = requests.post(TOKEN_ENDPOINT, data={
         'code': code,
@@ -172,29 +211,46 @@ def exchange_code(user_id, code):
     }, timeout=15)
     resp.raise_for_status()
     payload = resp.json()
-    token = _load_token(user_id)
+    identity = _fetch_identity(payload['access_token'])
+    return payload, identity
+
+
+def _token_from_payload(existing_token, payload, identity):
+    token = dict(existing_token)
     token.pop('oauth_state', None)
     token.pop('oauth_state_created', None)
     token['access_token'] = payload['access_token']
     token['expires_at'] = time.time() + payload.get('expires_in', 3600) - 60
     if payload.get('refresh_token'):
         token['refresh_token'] = payload['refresh_token']
-    token['connected_email'] = _fetch_email(payload['access_token'])
+    token['connected_email'] = identity.get('email')
     token.pop('sync_token', None)  # force a fresh full sync with the new grant
-    _save_token(user_id, token)
     return token
 
 
-def _fetch_email(access_token):
-    try:
-        resp = requests.get(
-            'https://www.googleapis.com/oauth2/v2/userinfo',
-            headers={'Authorization': f'Bearer {access_token}'}, timeout=10)
-        if resp.ok:
-            return resp.json().get('email')
-    except requests.RequestException:
-        pass
-    return None
+def exchange_code(user_id, code):
+    """'Connect my calendar' flow: exchange + persist in one step for a
+    known, already-logged-in user. Returns (token, identity) — the
+    caller uses identity to backfill google_id/google_email onto that
+    user's account so 'Sign in with Google' works for them too later."""
+    payload, identity = _exchange_code_raw(code)
+    token = _token_from_payload(_load_token(user_id), payload, identity)
+    _save_token(user_id, token)
+    return token, identity
+
+
+def exchange_code_for_sso(code):
+    """'Sign in with Google' flow: exchange the code but don't persist
+    a token file yet, since the PerKan user isn't known until the
+    caller matches or creates one by identity['id']. Call
+    save_token_for_user() once that's decided."""
+    return _exchange_code_raw(code)
+
+
+def save_token_for_user(user_id, payload, identity):
+    token = _token_from_payload(_load_token(user_id), payload, identity)
+    _save_token(user_id, token)
+    return token
 
 
 def _refresh_access_token(user_id, token):

@@ -52,8 +52,10 @@ def _load_secret_key():
 
 app.secret_key = _load_secret_key()
 
-# Routes reachable without an authenticated session.
-PUBLIC_ENDPOINTS = {'login', 'static'}
+# Routes reachable without an authenticated session. gcal_sso/gcal_callback
+# must be reachable while logged out too, since "Sign in with Google" IS
+# the login for a not-yet-authenticated visitor.
+PUBLIC_ENDPOINTS = {'login', 'static', 'gcal_sso', 'gcal_callback'}
 
 
 @app.before_request
@@ -410,6 +412,9 @@ def login():
         return redirect('/')
 
     error = None
+    gcal_error = request.args.get('gcal_error')
+    if gcal_error:
+        error = f'Google sign-in failed ({gcal_error}). You can try again or use a local account below.'
     if request.method == 'POST':
         username = (request.form.get('username') or '').strip()
         password = request.form.get('password') or ''
@@ -429,7 +434,7 @@ def login():
                 return redirect('/')
             error = 'invalid username or password'
 
-    return render_template('login.html', bootstrap=bootstrap, error=error)
+    return render_template('login.html', bootstrap=bootstrap, error=error, google_configured=gcal.is_configured())
 
 
 @app.route('/logout', methods=['POST'])
@@ -944,24 +949,79 @@ def gcal_login():
     return redirect(gcal.get_auth_url(session['user_id']))
 
 
+@app.route('/auth/google/sso', methods=['GET'])
+def gcal_sso():
+    """Start of 'Sign in with Google' for a not-yet-logged-in visitor.
+    If they're already logged in, there's nothing to sign into — send
+    them to the ordinary connect-my-calendar flow instead."""
+    if session.get('user_id') and users.get_user(session['user_id']):
+        return redirect('/auth/google/login')
+    if not gcal.is_configured():
+        abort(400, description='GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET are not configured on the server')
+    url, state = gcal.build_sso_auth_url()
+    session['sso_state'] = state
+    return redirect(url)
+
+
 @app.route('/auth/google/callback', methods=['GET'])
 def gcal_callback():
-    user_id = session.get('user_id')
     error = request.args.get('error')
     if error:
-        return redirect('/?gcal_error=' + error)
+        was_logged_in = bool(session.get('user_id') and users.get_user(session['user_id']))
+        session.pop('sso_state', None)
+        destination = '/' if was_logged_in else '/login'
+        return redirect(f'{destination}?gcal_error={error}')
+
     code = request.args.get('code')
     state = request.args.get('state')
-    if not code or not user_id or not gcal.verify_state(user_id, state):
+    if not code:
+        abort(400, description='missing authorization code')
+
+    existing_user_id = session.get('user_id')
+    if existing_user_id and users.get_user(existing_user_id):
+        # "Connect my calendar" — the visitor was already logged in via a
+        # local account (or a previous Google sign-in) before starting this.
+        if not gcal.verify_state(existing_user_id, state):
+            abort(400, description='invalid or expired OAuth state')
+        try:
+            token, identity = gcal.exchange_code(existing_user_id, code)
+        except Exception as exc:
+            logger.warning('Google Calendar OAuth exchange failed for user %s: %s', existing_user_id, exc)
+            return redirect('/?gcal_error=exchange_failed')
+        if identity.get('id'):
+            users.link_google_account(existing_user_id, identity['id'], identity.get('email'))
+
+        board = _load_data()
+        if _push_pending_cards_for_user(board, existing_user_id):
+            _save_data(board)
+        return redirect('/?gcal_connected=1')
+
+    # "Sign in with Google" — no one was logged in yet.
+    pending_state = session.pop('sso_state', None)
+    if not pending_state or pending_state != state:
         abort(400, description='invalid or expired OAuth state')
     try:
-        gcal.exchange_code(user_id, code)
+        payload, identity = gcal.exchange_code_for_sso(code)
     except Exception as exc:
-        logger.warning('Google Calendar OAuth exchange failed for user %s: %s', user_id, exc)
-        return redirect('/?gcal_error=exchange_failed')
+        logger.warning('Google sign-in exchange failed: %s', exc)
+        return redirect('/login?gcal_error=exchange_failed')
+    if not identity.get('id'):
+        return redirect('/login?gcal_error=no_identity')
+
+    user = users.find_by_google_id(identity['id'])
+    if not user:
+        base_username = (identity.get('email') or 'user').split('@')[0]
+        username = users.generate_unique_username(base_username)
+        user = users.create_user(
+            username, password=None,
+            display_name=identity.get('name') or username,
+            google_id=identity['id'], google_email=identity.get('email'))
+
+    gcal.save_token_for_user(user['id'], payload, identity)
+    session['user_id'] = user['id']
 
     board = _load_data()
-    if _push_pending_cards_for_user(board, user_id):
+    if _push_pending_cards_for_user(board, user['id']):
         _save_data(board)
     return redirect('/?gcal_connected=1')
 

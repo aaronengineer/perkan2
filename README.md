@@ -43,6 +43,18 @@ can't delete the account you're currently logged in as (log in as someone else f
 Local accounts live in `data/users.json` with hashed passwords (already gitignored). Deleting a
 user unassigns their cards and disconnects their Google Calendar; it doesn't delete their cards.
 
+**Sign in with Google:** if `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are configured (see below),
+the login page also shows a "Sign in with Google" button — one OAuth consent screen doing double
+duty as both login *and* calendar connection. The first time someone signs in that way, PerKan
+auto-creates a local account for them (matched by their Google account's stable id, not email, so
+it keeps working if their email address ever changes) and connects their calendar in the same
+step. Signing in with Google as the very first user bootstraps the board, same as filling out the
+manual form. A Google-linked account has no local password by default, so it can only log in via
+Google — until that person sets one themselves from **Settings → 👤 Users** (only they can set
+their own password). Conversely, connecting your calendar the ordinary way (already logged in
+locally, via Settings → 📅 Calendar) also links your account to that Google identity, so "Sign in
+with Google" starts working for you too from then on.
+
 ## Google Calendar Sync
 
 Each user connects **their own** Google account (personal Gmail or Google Workspace — both use

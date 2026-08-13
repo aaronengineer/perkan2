@@ -84,13 +84,48 @@ in as themselves. There's no single board-wide calendar anymore.
 
 **Setup (one-time, by whoever runs the server):**
 
-1. In [Google Cloud Console](https://console.cloud.google.com/), create a project, enable the
-   **Google Calendar API**, and create an **OAuth 2.0 Client ID** (Web application type). This
-   is shared infrastructure — one OAuth app serves every PerKan user, each of whom grants it
-   access to their own calendar individually.
-2. Add an authorized redirect URI matching `GOOGLE_REDIRECT_URI` below (default
-   `http://127.0.0.1:5000/auth/google/callback`).
-3. Set these environment variables (e.g. in a `.env` file, which is already gitignored):
+You don't need a company/Workspace account for any of this — a free personal Google account is
+enough to create the OAuth app that the rest of your group signs into.
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) and sign in with any Google
+   account (your personal Gmail is fine). If this is your first time here, accept the terms and
+   create an organization-less project when prompted.
+2. **Create a project:** top-left project dropdown → **New Project** → give it any name (e.g.
+   "PerKan") → **Create**. Make sure it's selected in that same dropdown afterward.
+3. **Enable the Calendar API:** search bar at the top → "Google Calendar API" → open it →
+   **Enable**.
+4. **Configure the OAuth consent screen** (APIs & Services → OAuth consent screen):
+   - User Type: **External** (this is the only option available without a Workspace account —
+     that's fine, see the note below).
+   - Fill in the required fields: app name (e.g. "PerKan"), your own email as support email and
+     developer contact.
+   - Scopes: you can skip adding scopes here — PerKan requests them directly at sign-in time.
+   - **Test users:** add the Google account email of everyone who should be able to sign in
+     (yourself included). This is the step that actually controls who can log into your PerKan —
+     without being added here, a personal Gmail account will be rejected by Google before it
+     ever reaches PerKan.
+   - Leave **Publishing status** as **Testing**. Don't click Publish — see note below.
+5. **Create credentials** (APIs & Services → Credentials → **Create Credentials** → **OAuth
+   client ID**):
+   - Application type: **Web application**.
+   - Add an authorized redirect URI matching `GOOGLE_REDIRECT_URI` below (default
+     `http://127.0.0.1:5000/auth/google/callback`).
+   - Save the generated **Client ID** and **Client Secret** — you'll need them in step 6.
+
+   This is shared infrastructure — one OAuth app serves every PerKan user, each of whom grants
+   it access to their own calendar individually.
+
+   > **Why "Testing" instead of "Publish App"?** PerKan asks for calendar access, which Google
+   > treats as a sensitive scope. Publishing an app that requests it triggers Google's formal
+   > verification process (privacy policy, domain ownership, a demo video, possibly a security
+   > review) — built for real companies shipping public products, not a kanban board for a few
+   > friends or family. Staying in **Testing** skips all of that: anyone you've added as a test
+   > user (up to 100 people) can sign in immediately. The one tradeoff is that Google expires
+   > refresh tokens issued by an unverified app after **7 days**, so each connected person will
+   > occasionally need to revisit Settings → 📅 Calendar → Connect Google Calendar (or sign in
+   > with Google again) to reconnect. For a small trusted group this is a minor, occasional
+   > click — not worth going through verification for.
+6. Set these environment variables (e.g. in a `.env` file, which is already gitignored):
 
    | Variable | Default | Purpose |
    |---|---|---|
@@ -105,8 +140,10 @@ in as themselves. There's no single board-wide calendar anymore.
    | `GCAL_SYNC_WINDOW_DAYS` | `90` | How far ahead to look for events on the first (non-incremental) sync |
    | `SECRET_KEY` | *(auto-generated, persisted to `data/secret_key.txt`)* | Flask session signing key. Only set this yourself if you want to invalidate all sessions on demand or share one key across a fresh deployment. |
 
-4. Each person then logs into PerKan and opens **Settings → 📅 Calendar → Connect Google
-   Calendar** individually.
+7. Each person then logs into PerKan and opens **Settings → 📅 Calendar → Connect Google
+   Calendar** individually — or, from the login page, just clicks **Sign in with Google**, which
+   does the login and calendar connection in one step (see [Users & Login](#users--login)
+   above). Either way, only the test users you added in step 4 will be able to complete this.
 
 **Note on multiple Gunicorn workers:** each worker runs its own polling thread, one pass per
 connected user per tick. They throttle themselves against duplicate work per-user via each
